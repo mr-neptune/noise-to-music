@@ -15,7 +15,7 @@ const ivIndex = (d) => Math.max(-12, Math.min(12, d)) + 12;
 // genre -> { sources, minor (mode used for the degree table), filter }
 const GENRES = {
   classical: { sources: ['classical'], minor: false },
-  jazz: { sources: ['jazz'], minor: false },
+  jazz: { sources: ['jazz', 'wjazz'], minor: false },
   lofi: { sources: ['jazz', 'rnb'], minor: false, filter: (d) => d.tempo < 95 },
   rock: { sources: ['rock'], minor: true },
   funk: { sources: ['funk'], minor: true },
