@@ -136,18 +136,34 @@
   }
 
   // ---------- song form ----------
-  // The genome holds 9 unique bars: section A (bars 0-3), section B (bars
-  // 4-7) and an ending bar (8) that replaces A's last bar the final time.
-  // FORM lists genome bars in playing order: a 16-bar A A B A' song.
-  const NB = 9, GSTEPS = NB * BAR, GSLOTS = NB * 2;
+  // A song genome holds S unique 4-bar sections (A, B, C...) followed by one
+  // ending bar that replaces A's last bar the final time it plays. A plan
+  // lists the sections in playing order; the closing 'A′' ends the song.
   const CTR_LO = 55, CTR_HI = 79;
-  const FORM = [0, 1, 2, 3, 0, 1, 2, 3, 4, 5, 6, 7, 0, 1, 2, 8];
-  const SECTIONS = [{ name: 'A', bar: 0 }, { name: 'A', bar: 4 }, { name: 'B', bar: 8 }, { name: 'A′', bar: 12 }];
-  const WIN = { A: [0, 1, 2, 3], B: [4, 5, 6, 7], E: [0, 1, 2, 8] };
+  const LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+  const PLAN_NAMES = {
+    2: ['A', 'A', 'B', 'A′'],
+    3: ['A', 'A', 'B', 'A', 'C', 'B', 'A', 'A′'],
+  };
+  function planOf(S) {
+    const names = PLAN_NAMES[S], form = [], sections = [];
+    names.forEach((name, i) => {
+      const s = LETTERS.indexOf(name[0]);
+      sections.push({ name, bar: i * 4 });
+      for (let b = 0; b < 4; b++) form.push(name === 'A′' && b === 3 ? S * 4 : s * 4 + b);
+    });
+    return { S, names, form, sections };
+  }
+  const PLANS = { 2: planOf(2), 3: planOf(3) };
+  const barsOf = (g) => g.mel.length / BAR;
+  const planFor = (g) => PLANS[(barsOf(g) - 1) / 4];
 
-  function randomGenome(rnd) {
-    const g = { mel: new Int8Array(GSTEPS), bass: new Int8Array(GSTEPS), ctr: new Int8Array(GSTEPS), roots: new Int8Array(GSLOTS), quals: new Int8Array(GSLOTS) };
-    for (let i = 0; i < GSTEPS; i++) {
+  function emptyGenome(nb) {
+    return { mel: new Int8Array(nb * BAR), bass: new Int8Array(nb * BAR), ctr: new Int8Array(nb * BAR), roots: new Int8Array(nb * 2), quals: new Int8Array(nb * 2) };
+  }
+  // Fill bars [from, to) with random notes and chords.
+  function randomBars(g, rnd, from, to) {
+    for (let i = from * BAR; i < to * BAR; i++) {
       const r = rnd();
       g.mel[i] = r < 0.5 ? MEL_LO + Math.floor(rnd() * (MEL_HI - MEL_LO + 1)) : r < 0.75 ? HOLD : REST;
       const s = rnd();
@@ -155,15 +171,37 @@
       const c = rnd();
       g.ctr[i] = c < 0.35 ? CTR_LO + Math.floor(rnd() * (CTR_HI - CTR_LO + 1)) : c < 0.7 ? HOLD : REST;
     }
-    for (let s = 0; s < GSLOTS; s++) {
+    for (let s = from * 2; s < to * 2; s++) {
       g.roots[s] = Math.floor(rnd() * 12);
       g.quals[s] = Math.floor(rnd() * NQ);
     }
-    return g;
   }
+  function randomGenome(rnd, nb) { const g = emptyGenome(nb); randomBars(g, rnd, 0, nb); return g; }
 
   function clone(g) {
     return { mel: g.mel.slice(), bass: g.bass.slice(), ctr: g.ctr.slice(), roots: g.roots.slice(), quals: g.quals.slice() };
+  }
+  function copyBar(dst, db, src, sb) {
+    for (const k of ['mel', 'bass', 'ctr']) dst[k].set(src[k].subarray(sb * BAR, sb * BAR + BAR), db * BAR);
+    for (const k of ['roots', 'quals']) { dst[k][db * 2] = src[k][sb * 2]; dst[k][db * 2 + 1] = src[k][sb * 2 + 1]; }
+  }
+
+  // Change the number of sections, keeping the ones that exist. New
+  // sections start as random noise.
+  function resizeGenome(g, S, rnd) {
+    const S0 = (barsOf(g) - 1) / 4, out = emptyGenome(S * 4 + 1);
+    for (let b = 0; b < Math.min(S, S0) * 4; b++) copyBar(out, b, g, b);
+    if (S > S0) randomBars(out, rnd, S0 * 4, S * 4);
+    copyBar(out, S * 4, g, S0 * 4);
+    return out;
+  }
+
+  // Replace a share of the steps and chord slots with fresh random values.
+  function addNoise(g, rnd, amount) {
+    const nb = barsOf(g), n = emptyGenome(nb);
+    randomBars(n, rnd, 0, nb);
+    for (const k of ['mel', 'bass', 'ctr']) for (let i = 0; i < g[k].length; i++) if (rnd() < amount) g[k][i] = n[k][i];
+    for (let s = 0; s < g.roots.length; s++) if (rnd() < amount) { g.roots[s] = n.roots[s]; g.quals[s] = n.quals[s]; }
   }
 
   // Lay out the given genome bars one after another (a section, or the song).
@@ -177,7 +215,8 @@
     }
     return w;
   }
-  const song = (g) => windowOf(g, FORM);
+  const song = (g) => windowOf(g, planFor(g).form);
+  const sectionsOf = (g) => planFor(g).sections;
 
   // Notes with start, length and pitch; holds after a rest count as rest.
   function parse(track) {
@@ -434,33 +473,72 @@
     return M.chordT[((b % 2) * NQ + g.quals[a]) * NQ1 + out];
   }
 
+  const sameChord = (g, a, b) => g.roots[a] === g.roots[b] && g.quals[a] === g.quals[b];
+  const sectionBars = (s) => [s * 4, s * 4 + 1, s * 4 + 2, s * 4 + 3];
+  function scoreSection(w, T, loop, ending, groups) {
+    if (T.model) sectionModel(w, T, loop, ending, groups); else sectionRules(w, T, groups);
+    groups[5] += counterLoss(w, T);
+  }
+  // How alike two sections are: melody bar by bar, and the chord slots.
+  function likeness(g, a, b, norm) {
+    let sim = 0, same = 0;
+    for (let i = 0; i < 4; i++) sim += barSim(norm, a * 4 + i, b * 4 + i) / 4;
+    for (let s = 0; s < 8; s++) if (sameChord(g, a * 8 + s, b * 8 + s)) same++;
+    return { sim, same: same / 8 };
+  }
+  const total = (groups) => { let loss = 0; for (let i = 0; i < groups.length; i++) loss += groups[i]; return { loss, groups }; };
+
   // The whole song: each section scored on its own (averaged, so the scale
   // matches a single loop), plus terms for how the sections fit together.
   function evaluate(g, T) {
-    const groups = new Float64Array(GROUPS.length), M = T.model;
-    const wins = [[windowOf(g, WIN.A), true, false], [windowOf(g, WIN.B), false, false], [windowOf(g, WIN.E), false, true]];
-    for (const [w, loop, ending] of wins) {
-      if (M) sectionModel(w, T, loop, ending, groups); else sectionRules(w, T, groups);
-      groups[5] += counterLoss(w, T);
+    const groups = new Float64Array(GROUPS.length), M = T.model, plan = planFor(g), S = plan.S, names = plan.names;
+    for (let s = 0; s < S; s++) {
+      // A section that plays twice in a row also has to loop into itself.
+      let loop = false;
+      for (let i = 0; i + 1 < names.length; i++) if (names[i] === LETTERS[s] && names[i + 1] === names[i]) loop = true;
+      scoreSection(windowOf(g, sectionBars(s)), T, loop, false, groups);
     }
-    for (let i = 0; i < groups.length; i++) groups[i] /= 3;
+    scoreSection(windowOf(g, [0, 1, 2, S * 4]), T, false, true, groups);
+    for (let i = 0; i < groups.length; i++) groups[i] /= S + 1;
 
-    // Chord moves across the section boundaries: A into B, and B back to A.
-    if (M) groups[0] += 2.5 * Math.max(0, -(chordLP(M, g, 7, 8) + chordLP(M, g, 15, 0)) / 2 - (M.base.chord || 0));
-    // B contrasts with A: a different tune and mostly different chords.
+    // Chord moves across each section boundary (A into B, B back to A...),
+    // and the new section doesn't open on the chord just played.
+    const seen = new Set();
+    let nll = 0, n = 0, open = 0;
+    for (let i = 0; i + 1 < names.length; i++) {
+      const a = LETTERS.indexOf(names[i][0]), b = LETTERS.indexOf(names[i + 1][0]);
+      if (a === b || seen.has(a * 32 + b)) continue;
+      seen.add(a * 32 + b);
+      if (M) nll -= chordLP(M, g, a * 8 + 7, b * 8);
+      if (sameChord(g, a * 8 + 7, b * 8)) open++;
+      n++;
+    }
+    if (M) groups[0] += 2.5 * Math.max(0, nll / n - (M.base.chord || 0));
+    groups[3] += 2 * open / n;
+    // Sections contrast: a different tune and mostly different chords.
     const norm = parse(g.mel).norm;
-    let sim = 0, same = 0;
-    for (let b = 0; b < 4; b++) sim += barSim(norm, b, 4 + b) / 4;
-    for (let s = 0; s < 8; s++) if (g.roots[s] === g.roots[8 + s] && g.quals[s] === g.quals[8 + s]) same++;
-    groups[3] += 3 * Math.max(0, sim - 0.35) + 2 * Math.max(0, same / 8 - 0.5);
-    // Mark the change of section: B doesn't open on the chord A just played.
-    if (g.roots[8] === g.roots[7] && g.quals[8] === g.quals[7]) groups[3] += 1;
+    let contrast = 0, pairs = 0;
+    for (let a = 0; a < S; a++) for (let b = a + 1; b < S; b++) {
+      const l = likeness(g, a, b, norm);
+      contrast += 3 * Math.max(0, l.sim - 0.35) + 2 * Math.max(0, l.same - 0.5); pairs++;
+    }
+    groups[3] += contrast / pairs;
     // The song ends on the tonic chord.
-    if (g.roots[GSLOTS - 1] !== 0) groups[3] += 1;
+    if (g.roots[g.roots.length - 1] !== 0) groups[3] += 1;
+    return total(groups);
+  }
 
-    let loss = 0;
-    for (let i = 0; i < groups.length; i++) loss += groups[i];
-    return { loss, groups };
+  // Keep-composing mode. The genome holds the section just played (bars 0-3,
+  // frozen) and the next one being written (bars 4-7). It may develop the
+  // earlier material but shouldn't simply repeat it.
+  function evaluateNext(g, T) {
+    const groups = new Float64Array(GROUPS.length), M = T.model;
+    scoreSection(windowOf(g, sectionBars(1)), T, false, false, groups);
+    if (M) groups[0] += 2.5 * Math.max(0, -chordLP(M, g, 7, 8) - (M.base.chord || 0));
+    if (sameChord(g, 7, 8)) groups[3] += 1;
+    const l = likeness(g, 0, 1, parse(g.mel).norm);
+    groups[3] += 3 * Math.max(0, l.sim - 0.6) + 2 * Math.max(0, l.same - 0.75);
+    return total(groups);
   }
 
   // Hand-written rule critic, used when the learned models are unavailable.
@@ -587,23 +665,24 @@
     return lo + Math.floor(rnd() * (hi - lo + 1));
   }
 
-  function mutateTrack(track, rnd, lo, hi) {
-    const r = rnd(), len = track.length;
+  // Mutations only touch bars from `from` on; earlier bars are frozen (and
+  // can still be copied from).
+  function mutateTrack(track, rnd, lo, hi, from) {
+    const r = rnd(), len = track.length, start = from * BAR;
     if (r < 0.5) {
       const ons = [];
-      for (let i = 0; i < len; i++) if (track[i] >= 0) ons.push(i);
+      for (let i = start; i < len; i++) if (track[i] >= 0) ons.push(i);
       if (ons.length) { const i = pick(rnd, ons); track[i] = clamp(track[i] + pick(rnd, DELTAS), lo, hi); return; }
     }
     if (r < 0.85) {
-      const i = Math.floor(rnd() * len), t = rnd();
+      const i = start + Math.floor(rnd() * (len - start)), t = rnd();
       track[i] = t < 0.4 ? nearbyPitch(track, i, rnd, lo, hi) : t < 0.7 ? HOLD : REST;
       return;
     }
     // Copy a bar or half bar elsewhere: lets motifs repeat.
     const seg = rnd() < 0.5 ? BAR : BAR / 2;
-    const n = len / seg, a = Math.floor(rnd() * n);
-    let b = Math.floor(rnd() * (n - 1)); if (b >= a) b++;
-    track.copyWithin(b * seg, a * seg, a * seg + seg);
+    const n = len / seg, first = start / seg, a = Math.floor(rnd() * n), b = first + Math.floor(rnd() * (n - first));
+    if (a !== b) track.copyWithin(b * seg, a * seg, a * seg + seg);
   }
 
   // Move a bar or half bar to another chord root, carrying its melody, bass
@@ -616,12 +695,12 @@
       if (g.ctr[i] >= 0) g.ctr[i] = fold(g.ctr[i] + d, CTR_LO, CTR_HI);
     }
   }
-  function pickSegment(rnd) {
-    const half = rnd() < 0.35;
-    return half ? [Math.floor(rnd() * GSLOTS), 1] : [Math.floor(rnd() * NB) * 2, 2];
+  function pickSegment(g, rnd, from) {
+    const nb = barsOf(g);
+    return rnd() < 0.35 ? [from * 2 + Math.floor(rnd() * (nb - from) * 2), 1] : [(from + Math.floor(rnd() * (nb - from))) * 2, 2];
   }
-  function transposeSegment(g, rnd) {
-    const [slot, n] = pickSegment(rnd), d = pick(rnd, ROOT_DELTAS);
+  function transposeSegment(g, rnd, from) {
+    const [slot, n] = pickSegment(g, rnd, from), d = pick(rnd, ROOT_DELTAS);
     for (let s = slot; s < slot + n; s++) g.roots[s] = (g.roots[s] + d + 12) % 12;
     shiftNotes(g, slot, n, d);
   }
@@ -637,40 +716,40 @@
   }
   // Propose a chord the genre actually uses for a bar or half bar. Half the
   // time the notes move with it, keeping their relation to the chord.
-  function proposeChord(g, rnd, cdf) {
+  function proposeChord(g, rnd, cdf, from) {
     const u = rnd();
     let i = 0;
     while (i < cdf.length - 1 && cdf[i] < u) i++;
-    const root = Math.floor(i / NQ), q = i % NQ, [slot, n] = pickSegment(rnd);
+    const root = Math.floor(i / NQ), q = i % NQ, [slot, n] = pickSegment(g, rnd, from);
     if (rnd() < 0.5) shiftNotes(g, slot, n, ((root - g.roots[slot] + 18) % 12) - 6);
     for (let s = slot; s < slot + n; s++) { g.roots[s] = root; g.quals[s] = q; }
   }
 
-  function mutate(g, rnd, cdf) {
-    const k = 1 + (rnd() < 0.5 ? 1 : 0) + (rnd() < 0.25 ? 1 : 0);
+  function mutate(g, rnd, cdf, from) {
+    const k = 1 + (rnd() < 0.5 ? 1 : 0) + (rnd() < 0.25 ? 1 : 0), slots = g.roots.length;
     for (let j = 0; j < k; j++) {
       const m = rnd();
-      if (m < 0.07) { transposeSegment(g, rnd); continue; }
-      if (m < 0.15) { proposeChord(g, rnd, cdf); continue; }
+      if (m < 0.07) { transposeSegment(g, rnd, from); continue; }
+      if (m < 0.15) { proposeChord(g, rnd, cdf, from); continue; }
       const r = rnd();
-      if (r < 0.36) mutateTrack(g.mel, rnd, MEL_LO, MEL_HI);
-      else if (r < 0.54) mutateTrack(g.bass, rnd, BASS_LO, BASS_HI);
-      else if (r < 0.68) mutateTrack(g.ctr, rnd, CTR_LO, CTR_HI);
+      if (r < 0.36) mutateTrack(g.mel, rnd, MEL_LO, MEL_HI, from);
+      else if (r < 0.54) mutateTrack(g.bass, rnd, BASS_LO, BASS_HI, from);
+      else if (r < 0.68) mutateTrack(g.ctr, rnd, CTR_LO, CTR_HI, from);
       else {
-        const s = Math.floor(rnd() * GSLOTS), t = rnd();
+        const s = from * 2 + Math.floor(rnd() * (slots - from * 2)), t = rnd();
         if (t < 0.4) g.roots[s] = (g.roots[s] + pick(rnd, ROOT_DELTAS) + 12) % 12;
         else if (t < 0.7) g.quals[s] = Math.floor(rnd() * NQ);
         else {
-          const o = s === 0 ? 1 : s === GSLOTS - 1 ? s - 1 : s + (rnd() < 0.5 ? -1 : 1);
+          const o = s === 0 ? 1 : s === slots - 1 ? s - 1 : s + (rnd() < 0.5 ? -1 : 1);
           g.roots[s] = g.roots[o]; g.quals[s] = g.quals[o];
         }
       }
     }
   }
 
-  function crossover(a, b, rnd) {
-    const c = clone(a);
-    for (let bar = 0; bar < NB; bar++) {
+  function crossover(a, b, rnd, from) {
+    const c = clone(a), nb = barsOf(a);
+    for (let bar = from; bar < nb; bar++) {
       if (rnd() < 0.5) c.mel.set(b.mel.subarray(bar * BAR, bar * BAR + BAR), bar * BAR);
       if (rnd() < 0.5) c.bass.set(b.bass.subarray(bar * BAR, bar * BAR + BAR), bar * BAR);
       if (rnd() < 0.5) c.ctr.set(b.ctr.subarray(bar * BAR, bar * BAR + BAR), bar * BAR);
@@ -682,29 +761,54 @@
     return c;
   }
 
-  // A population of songs; step() runs one generation and records the best.
+  // A population of genomes; step() runs one generation and records the best.
+  // Options: size, sections (2 or 3), evaluate (scoring function), from
+  // (first bar that may change) and seeds (starting genomes instead of noise).
   class Evolver {
-    constructor(target, seed, size) {
+    constructor(target, seed, opts) {
+      opts = opts || {};
       this.target = target;
       this.cdf = chordCdf(target);
       this.seed = seed >>> 0;
       this.rnd = mulberry32(this.seed);
-      this.size = size || 200;
-      // The starting noise depends only on the seed, so every genre starts
-      // from the same random notes.
-      const init = mulberry32(this.seed ^ 0x9e3779b9);
+      this.size = opts.size || 200;
+      this.evalFn = opts.evaluate || evaluate;
+      this.from = opts.from || 0;
       this.pop = [];
-      for (let i = 0; i < this.size; i++) this.pop.push(this.score(randomGenome(init)));
+      if (opts.seeds) {
+        for (let i = 0; i < this.size; i++) this.pop.push(this.score(clone(opts.seeds[i % opts.seeds.length])));
+      } else {
+        // The starting noise depends only on the seed, so every genre starts
+        // from the same random notes.
+        const init = mulberry32(this.seed ^ 0x9e3779b9), nb = (opts.sections || 2) * 4 + 1;
+        for (let i = 0; i < this.size; i++) this.pop.push(this.score(randomGenome(init, nb)));
+      }
       this.pop.sort((x, y) => x.loss - y.loss);
       this.gen = 0;
       this.history = [this.snapshot()];
     }
-    score(g) { const e = evaluate(g, this.target); return { g, loss: e.loss, groups: e.groups }; }
+    score(g) { const e = this.evalFn(g, this.target); return { g, loss: e.loss, groups: e.groups }; }
     snapshot() { const b = this.pop[0]; return { gen: this.gen, loss: b.loss, groups: Array.from(b.groups), genome: clone(b.g) }; }
+    best() { return this.pop[0]; }
+    rescore() { this.pop = this.pop.map((x) => this.score(x.g)).sort((x, y) => x.loss - y.loss); }
+    record() { this.gen++; this.history.push(this.snapshot()); }
     setTarget(target) {
       this.target = target;
       this.cdf = chordCdf(target);
-      this.pop = this.pop.map((x) => this.score(x.g)).sort((x, y) => x.loss - y.loss);
+      this.rescore();
+    }
+    // Scramble a share of the current best song, independently for every
+    // member of the population, and continue from there.
+    addNoise(amount) {
+      const base = this.pop[0].g;
+      this.pop = this.pop.map(() => { const g = clone(base); addNoise(g, this.rnd, amount); return g; }).map((g) => this.score(g));
+      this.pop.sort((x, y) => x.loss - y.loss);
+      this.record();
+    }
+    // Grow or shrink the song to S sections; new sections start as noise.
+    resize(S) {
+      this.pop = this.pop.map((x) => this.score(resizeGenome(x.g, S, this.rnd))).sort((x, y) => x.loss - y.loss);
+      this.record();
     }
     tournament() {
       let best = this.pop[Math.floor(this.rnd() * this.size)];
@@ -714,20 +818,35 @@
     step() {
       const next = this.pop.slice(0, 6);
       while (next.length < this.size) {
-        const child = this.rnd() < 0.5 ? crossover(this.tournament(), this.tournament(), this.rnd) : clone(this.tournament());
-        mutate(child, this.rnd, this.cdf);
+        const child = this.rnd() < 0.5 ? crossover(this.tournament(), this.tournament(), this.rnd, this.from) : clone(this.tournament());
+        mutate(child, this.rnd, this.cdf, this.from);
         next.push(this.score(child));
       }
       next.sort((x, y) => x.loss - y.loss);
       this.pop = next;
-      this.gen++;
-      this.history.push(this.snapshot());
+      this.record();
       return this.history[this.history.length - 1];
     }
+  }
+
+  // Keep-composing mode: an optimizer for the section after `prev`, given
+  // the song's sections so far (4-bar windows). Its starting population is
+  // built from the song's own material with chords the genre model proposes;
+  // no random notes are added.
+  function composeNext(T, prev, pool, seed) {
+    const rnd = mulberry32(seed), cdf = chordCdf(T), seeds = [];
+    for (let i = 0; i < 60; i++) {
+      const g = emptyGenome(8), src = pick(rnd, pool);
+      for (let b = 0; b < 4; b++) { copyBar(g, b, prev, b); copyBar(g, 4 + b, src, b); }
+      const k = 1 + Math.floor(rnd() * 3);
+      for (let j = 0; j < k; j++) (rnd() < 0.6 ? proposeChord(g, rnd, cdf, 4) : transposeSegment(g, rnd, 4));
+      seeds.push(g);
+    }
+    return new Evolver(T, seed, { size: 60, evaluate: evaluateNext, from: 4, seeds });
   }
 
   const NOTE_NAMES = ['C', 'D♭', 'D', 'E♭', 'E', 'F', 'G♭', 'G', 'A♭', 'A', 'B♭', 'B'];
   function chordName(root, q, key) { return NOTE_NAMES[(root + key) % 12] + QUALITIES[q].name; }
 
-  root.MusicLab = { STEPS, BAR, SLOTS, SLOT, REST, HOLD, NB, FORM, SECTIONS, QUALITIES, GENRES, GROUPS, NOTE_NAMES, makeTarget, evaluate, parse, song, windowOf, Evolver, chordName, mulberry32, loadModels, components, mixModel };
+  root.MusicLab = { STEPS, BAR, SLOTS, SLOT, REST, HOLD, PLANS, QUALITIES, GENRES, GROUPS, NOTE_NAMES, makeTarget, evaluate, evaluateNext, parse, song, sectionsOf, windowOf, Evolver, composeNext, chordName, mulberry32, loadModels, components, mixModel };
 })(typeof self !== 'undefined' ? self : globalThis);

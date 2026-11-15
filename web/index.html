@@ -65,6 +65,7 @@ input[type=range]:disabled{opacity:.35}
 .btn svg{width:15px;height:15px;fill:currentColor}
 .toggle{display:inline-flex;align-items:center;gap:8px;font:500 14px var(--sans);color:var(--soft);cursor:pointer;margin-left:4px}
 .toggle input{accent-color:var(--cyan);width:16px;height:16px}
+.pair{display:inline-flex;gap:6px;align-items:center}
 
 .readout{display:flex;flex-wrap:wrap;gap:8px 28px;align-items:baseline;margin:6px 0 12px}
 .big{font:600 28px var(--display)}
@@ -104,7 +105,7 @@ button:focus-visible,a:focus-visible,select:focus-visible,input:focus-visible{ou
     <span class="badge">lab · experiment 01</span>
   </div>
   <h1>Noise to <span>Music</span></h1>
-  <p class="sub">A 16-bar song of random notes. An optimizer nudges them, one step at a time, until they sound like the genre you pick. Press play and listen to it learn.</p>
+  <p class="sub">A song made of random notes. An optimizer nudges them, one step at a time, until they sound like the genre you pick. Press play and listen to it learn.</p>
 
   <section class="panel" aria-label="Controls">
     <div class="label" id="genre-label">Genre</div>
@@ -121,10 +122,18 @@ button:focus-visible,a:focus-visible,select:focus-visible,input:focus-visible{ou
     </div>
     <div class="btns">
       <button class="btn primary" id="play"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4v16l13-8z"/></svg><span>Play</span></button>
-      <button class="btn" id="reseed" title="Start again from new random notes">New noise</button>
       <button class="btn" id="skip" title="Run the remaining steps now">Skip to end</button>
       <select id="speed" aria-label="Speed"><option value="0.5">0.5× speed</option><option value="1" selected>1× speed</option><option value="2">2× speed</option><option value="4">4× speed</option></select>
       <label class="toggle"><input type="checkbox" id="drums" checked> Backing drums</label>
+    </div>
+    <div class="btns">
+      <span class="pair">
+        <button class="btn" id="addnoise" title="Scramble part of the current song and let the optimizer settle it again">Add noise</button>
+        <select id="amount" aria-label="How much noise to add"><option value="0.15">Light</option><option value="0.35" selected>Medium</option><option value="0.7">Heavy</option></select>
+      </span>
+      <button class="btn" id="reseed" title="Throw the song away and start again from new random notes">Start brand new noise</button>
+      <select id="length" aria-label="Song length"><option value="2">16 bars · A A B A′</option><option value="3">32 bars · A A B A C B A A′</option></select>
+      <label class="toggle" title="While playing, keep writing new sections onto the end of the song"><input type="checkbox" id="endless"> Keep composing</label>
     </div>
   </section>
 
@@ -160,6 +169,9 @@ button:focus-visible,a:focus-visible,select:focus-visible,input:focus-visible{ou
       <p><b>The loss.</b> Each section is scored by how unlikely it is under the genre's model (negative log-likelihood), plus how far its statistics drift from the genre's, so it can't win by repeating one safe note. Each term is measured against held-out real music: a term reaches zero once a section is as plausible as the best 10% of real 4-bar phrases. A blend mixes the two models' probabilities.</p>
       <p><b>Form and counterpoint.</b> On top of that, the song is scored as a whole: the chords have to flow from A into B and back, B has to differ from A in tune and harmony, and the song has to end on the home chord. The counter-melody follows classic counterpoint rules: stay under the melody, avoid clashing with it on strong beats, avoid parallel fifths and octaves, and move when the melody holds still.</p>
       <p><b>The optimizer.</b> A genetic algorithm with a population of 200 songs. Each step mutates pitches, rhythms and chords, moves whole bars to a new chord, recombines bars from good parents and keeps what lowers the loss. It descends the loss like training does, only without gradients. Switch genre mid-run and it fine-tunes from where it is.</p>
+      <p><b>Add noise.</b> Once a song has settled, Add noise scrambles a share of its notes and chords (light 15%, medium 35%, heavy 70%) in every member of the population, and the optimizer works the noise back into music. Light noise gives a variation on the same song. Heavy noise usually gives a new one with the same chords. Scrub the step slider back to compare. Start brand new noise throws everything away instead.</p>
+      <p><b>Longer songs.</b> The 32-bar form adds a third section, C. Switching length keeps the sections already trained, and only C starts from noise.</p>
+      <p><b>Keep composing.</b> While the song plays, new sections keep being written onto the end. No random notes are added here. Each new section starts from bars already in the song, with chords the genre model proposes, and is trained in the background to follow on from the previous section without repeating it. It joins the song only when it's finished, so you only hear finished sections.</p>
       <p><b>What is learned.</b> The notes and chords. Instruments, the comping rhythm and the backing drums are genre presets. Everything runs in your browser, and nothing is sent anywhere.</p>
       <p class="note">Training data: Lakh MIDI Dataset (Colin Raffel, CC BY 4.0) with tagtraum genre annotations (Hendrik Schreiber), and artist-labelled songs from its clean_midi subset. There is no lo-fi MIDI dataset, so Lo-fi is learned from jazz and R&amp;B under 95 BPM. The classical model is smaller (about 100 pieces) and noisier, because most of those files are human performances rather than quantized scores.</p>
       <p class="note">Next in the lab: evolving drum grooves, a skyline that grows into a city, and random characters that settle into a haiku. On iPhone, turn off silent mode to hear audio.</p>
@@ -186,6 +198,7 @@ button:focus-visible,a:focus-visible,select:focus-visible,input:focus-visible{ou
     blend: valid(q.get('blend')),
     mix: Math.min(100, Math.max(0, parseInt(q.get('mix'), 10) || 30)),
     seed: (parseInt(q.get('seed'), 10) >>> 0) || newSeed(),
+    sections: q.get('bars') === '32' ? 3 : 2,
     speed: 1, drums: true, running: false, live: true, scrub: 0, skipping: false,
   };
   if (S.blend === S.genre) S.blend = '';
@@ -200,20 +213,25 @@ button:focus-visible,a:focus-visible,select:focus-visible,input:focus-visible{ou
   function syncUrl() {
     var p = new URLSearchParams({ genre: S.genre, seed: String(S.seed) });
     if (S.blend) { p.set('blend', S.blend); p.set('mix', String(S.mix)); }
+    if (S.sections === 3) p.set('bars', '32');
     history.replaceState(null, '', '?' + p.toString());
   }
   function restart() {
     target = L.makeTarget(S.genre, S.blend, S.mix / 100);
-    ev = new L.Evolver(target, S.seed);
-    segStart = 0; segClock = 0; segments = [{ at: 0, label: label() }];
+    ev = new L.Evolver(target, S.seed, { sections: S.sections });
+    segStart = 0; segClock = 0; segments = [{ at: 0, label: label(), kind: 'learn' }];
+    S.live = true; dirty = true; syncUrl(); syncControls();
+  }
+  // Start a new segment of training from wherever the population is now.
+  function segment(kind, note) {
+    segStart = ev.history.length - 1; segClock = 0;
+    segments.push({ at: segStart, label: label(), kind: kind, note: note });
     S.live = true; dirty = true; syncUrl(); syncControls();
   }
   function retarget() {
     target = L.makeTarget(S.genre, S.blend, S.mix / 100);
     ev.setTarget(target);
-    segStart = ev.history.length - 1; segClock = 0;
-    segments.push({ at: segStart, label: label() });
-    S.live = true; dirty = true; syncUrl(); syncControls();
+    segment('learn');
   }
   function snap() { var h = ev.history; return S.live ? h[h.length - 1] : h[Math.min(S.scrub, h.length - 1)]; }
   function done() { return ev.history.length - 1 >= segStart + MAX_STEPS; }
@@ -236,7 +254,19 @@ button:focus-visible,a:focus-visible,select:focus-visible,input:focus-visible{ou
   $('mix').addEventListener('input', function () { S.mix = +this.value; $('mixtext').textContent = label(); });
   $('mix').addEventListener('change', function () { S.mix = +this.value; retarget(); });
   $('play').addEventListener('click', function () { S.running ? pause() : play(); });
-  $('reseed').addEventListener('click', function () { S.seed = newSeed(); restart(); });
+  $('reseed').addEventListener('click', function () { S.seed = newSeed(); restart(); if (E.on) endlessStart(); });
+  $('addnoise').addEventListener('click', function () {
+    var sel = $('amount'), amt = +sel.value;
+    ev.addNoise(amt);
+    segment('noise', sel.options[sel.selectedIndex].text.toLowerCase());
+  });
+  $('length').addEventListener('change', function () {
+    S.sections = +this.value;
+    ev.resize(S.sections);
+    segment('resize', S.sections === 3 ? 'C' : '');
+    if (E.on) endlessStart();
+  });
+  $('endless').addEventListener('change', function () { this.checked ? endlessStart() : endlessStop(); });
   $('skip').addEventListener('click', function () { S.skipping = true; S.live = true; });
   $('speed').addEventListener('change', function () { S.speed = +this.value; });
   $('drums').addEventListener('change', function () { S.drums = this.checked; });
@@ -250,6 +280,7 @@ button:focus-visible,a:focus-visible,select:focus-visible,input:focus-visible{ou
     $('mix').disabled = !S.blend; $('mix').value = S.mix;
     $('mixtext').textContent = S.blend ? label() : '';
     $('live').setAttribute('aria-pressed', String(S.live));
+    $('length').value = String(S.sections);
     $('tempo').textContent = target.tempo + ' BPM · ' + (target.swing > 0.53 ? 'swung' : 'straight') + ' · key of ' + L.NOTE_NAMES[target.key];
     var drumsOk = target.style.drums !== 'none';
     $('drums').disabled = !drumsOk; $('drums').parentNode.style.opacity = drumsOk ? 1 : 0.45;
@@ -381,18 +412,61 @@ button:focus-visible,a:focus-visible,select:focus-visible,input:focus-visible{ou
     }
   }
 
-  // The genome laid out in song order (16 bars), cached per snapshot.
+  // The genome laid out in song order, cached per snapshot.
   function songOf(sn) { return sn.song || (sn.song = L.song(sn.genome)); }
 
-  function scheduleBar(t0, bar) {
-    var sn = snap(), g = songOf(sn), T = target, st = T.style;
+  // ---------- keep composing ----------
+  // The song as a growing list of 4-bar sections. The optimizer writes the
+  // next section in the background, starting from the song's own material;
+  // a section joins the song only once it is finished.
+  var E = { on: false, sections: [], composer: null, seed: 1, pos: 0, written: 0 };
+  var SECTION_GENS = 250, AHEAD = 2;
+  function sectionName(i) { return 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'[i % 26] + (i >= 26 ? Math.floor(i / 26) + 1 : ''); }
+  function endlessStart() {
+    var g = snap().genome, form = L.sectionsOf(g);
+    E.on = true; E.composer = null; E.written = 0; E.seed = S.seed;
+    E.sections = form.map(function (sec) {
+      var s = sec.name.charCodeAt(0) - 65;
+      return { name: sec.name[0], w: L.windowOf(g, [s * 4, s * 4 + 1, s * 4 + 2, s * 4 + 3]) };
+    });
+    E.letters = S.sections;
+    E.pos = S.running ? barCount % (form.length * 4) : 0;
+    $('endless').checked = true; dirty = true;
+  }
+  function endlessStop() { E.on = false; E.composer = null; $('endless').checked = false; barCount = 0; dirty = true; }
+  function composeStep(budget) {
+    if (!E.on || !S.running) return;
+    if (!E.composer) {
+      if (E.sections.length - Math.floor(E.pos / 4) > AHEAD || E.sections.length >= 400) return;
+      var seen = {}, pool = [];
+      E.sections.forEach(function (x) { if (!seen[x.name]) { seen[x.name] = 1; pool.push(x.w); } });
+      E.composer = L.composeNext(target, E.sections[E.sections.length - 1].w, pool, E.seed++);
+    }
+    var t0 = performance.now();
+    while (E.composer.gen < SECTION_GENS && performance.now() - t0 < budget) E.composer.step();
+    if (E.composer.gen >= SECTION_GENS) {
+      var g = E.composer.best().g;
+      E.sections.push({ name: sectionName(E.letters++), w: L.windowOf(g, [4, 5, 6, 7]), loss: E.composer.best().loss });
+      E.composer = null; E.written++; dirty = true;
+    }
+  }
+  // Next bar to play in keep-composing mode. If the next section isn't
+  // written yet, the last one repeats.
+  function endlessBar() {
+    if (Math.floor(E.pos / 4) >= E.sections.length) E.pos = (E.sections.length - 1) * 4;
+    var k = Math.floor(E.pos / 4), r = { g: E.sections[k].w, bar: E.pos % 4, abs: E.pos };
+    E.pos++;
+    return r;
+  }
+
+  function scheduleBar(t0, g, bar, abs, counter, last) {
+    var T = target, st = T.style;
     var beat = 60 / T.tempo, sw = T.swing;
     var offs = [0, sw * beat / 2, sw * beat, sw * beat + (1 - sw) * beat / 2];
     var at = function (k) { return t0 + Math.floor(k / 4) * beat + offs[((k % 4) + 4) % 4]; };
     var base = bar * 16;
-    // Arrangement: the counter-melody joins after the first A section.
     var tracks = [[g.mel, st.lead, 0.2], [g.bass, st.bass, 0.32]];
-    if (bar >= 4) tracks.push([g.ctr, st.counter, 0.11]);
+    if (counter) tracks.push([g.ctr, st.counter, 0.11]);
     tracks.forEach(function (tr) {
       L.parse(tr[0]).notes.forEach(function (n) {
         if (n.s < base || n.s >= base + 16) return;
@@ -411,13 +485,10 @@ button:focus-visible,a:focus-visible,select:focus-visible,input:focus-visible{ou
       var gr = GROOVES[st.drums];
       Object.keys(gr).forEach(function (inst) { gr[inst].forEach(function (h) { DRUM[inst](at(h[0]), h[1]); }); });
     }
-    bars.push({ t0: t0, bar: bar, len: 4 * beat });
+    bars.push({ t0: t0, bar: abs, len: 4 * beat, endless: E.on });
     if (bars.length > 8) bars.shift();
-    if (bar === L.FORM.length - 1) {
-      // A short pause after the final bar before the song starts again.
-      return 6 * beat;
-    }
-    return 4 * beat;
+    // A short pause after the final bar before the song starts again.
+    return last ? 6 * beat : 4 * beat;
   }
 
   function startCrackle() {
@@ -435,7 +506,15 @@ button:focus-visible,a:focus-visible,select:focus-visible,input:focus-visible{ou
   function tick() {
     if (target.style.lead === 'lofi') startCrackle(); else stopCrackle();
     while (nextBar < ac.currentTime + 0.15) {
-      nextBar += scheduleBar(nextBar, barCount % L.FORM.length);
+      if (E.on) {
+        var e = endlessBar();
+        // The counter-melody joins after the first section.
+        nextBar += scheduleBar(nextBar, e.g, e.bar, e.abs, e.abs >= 4, false);
+      } else {
+        var g = songOf(snap()), n = g.mel.length / 16, bar = barCount % n;
+        // Arrangement: the counter-melody joins after the first A section.
+        nextBar += scheduleBar(nextBar, g, bar, bar, bar >= 4, bar === n - 1);
+      }
       barCount++;
     }
   }
@@ -445,6 +524,7 @@ button:focus-visible,a:focus-visible,select:focus-visible,input:focus-visible{ou
     ac.resume();
     S.running = true; S.live = true;
     nextBar = ac.currentTime + 0.08; barCount = 0; bars = [];
+    if (E.on) E.pos = 0;
     timer = setInterval(tick, 25); tick();
     setPlayButton(); syncControls();
   }
@@ -461,7 +541,7 @@ button:focus-visible,a:focus-visible,select:focus-visible,input:focus-visible{ou
     var now = ac.currentTime;
     for (var i = bars.length - 1; i >= 0; i--) {
       var b = bars[i];
-      if (now >= b.t0) return now - b.t0 > b.len ? -1 : b.bar * 16 + Math.min(15.999, (now - b.t0) / b.len * 16);
+      if (now >= b.t0) return now - b.t0 > b.len || b.endless !== E.on ? -1 : b.bar * 16 + Math.min(15.999, (now - b.t0) / b.len * 16);
     }
     return -1;
   }
@@ -476,18 +556,41 @@ button:focus-visible,a:focus-visible,select:focus-visible,input:focus-visible{ou
   }
 
   var LO = 28, HI = 90;
-  function drawRoll(sn, ps) {
-    var c = fit($('roll')), x = c.x, W = c.w, H = c.h, top = 40;
-    var nSteps = L.FORM.length * 16, nSlots = L.FORM.length * 2;
+  // Join 4-bar section windows into one track set for drawing.
+  function concat(ws) {
+    var n = ws.length * 4, g = { mel: new Int8Array(n * 16), bass: new Int8Array(n * 16), ctr: new Int8Array(n * 16), roots: new Int8Array(n * 2), quals: new Int8Array(n * 2) };
+    ws.forEach(function (w, i) { ['mel', 'bass', 'ctr'].forEach(function (k) { g[k].set(w[k], i * 64); }); g.roots.set(w.roots, i * 8); g.quals.set(w.quals, i * 8); });
+    return g;
+  }
+  // What the piano roll shows: the whole song, or in keep-composing mode a
+  // page of four sections around the playhead.
+  function rollView() {
+    var ps = playStep();
+    if (!E.on) {
+      var sn = snap(), g = songOf(sn);
+      return { g: g, sections: L.sectionsOf(sn.genome), bars: g.mel.length / 16, ps: ps };
+    }
+    var cur = ps >= 0 ? Math.floor(ps / 64) : Math.max(0, Math.floor((E.pos - 1) / 4));
+    var first = Math.floor(cur / 4) * 4, list = E.sections.slice(first, first + 4);
+    return {
+      g: concat(list.map(function (x) { return x.w; })), bars: 16, ps: ps >= 0 ? ps - first * 64 : -1,
+      sections: list.map(function (x, i) { return { name: x.name, bar: i * 4 }; }),
+      writing: E.composer && list.length < 4 ? sectionName(E.letters) : '',
+    };
+  }
+
+  function drawRoll(v) {
+    var c = fit($('roll')), x = c.x, W = c.w, H = c.h, top = 40, ps = v.ps;
+    var nSteps = v.bars * 16, nSlots = v.g.roots.length;
     var colW = W / nSteps, rowH = (H - top - 6) / (HI - LO + 1);
     var y = function (p) { return top + (HI - p) * rowH; };
     x.clearRect(0, 0, W, H);
     for (var p = LO; p <= HI; p++) if ([1, 3, 6, 8, 10].indexOf(p % 12) >= 0) { x.fillStyle = 'rgba(255,255,255,.018)'; x.fillRect(0, y(p), W, rowH); }
     // Section bands and labels, then bar and beat lines.
     x.font = '600 12px "JetBrains Mono", monospace'; x.textBaseline = 'middle';
-    L.SECTIONS.forEach(function (sec, i) {
+    v.sections.forEach(function (sec, i) {
       var x0 = sec.bar * 16 * colW;
-      if (sec.name === 'B') { x.fillStyle = 'rgba(143,211,255,.045)'; x.fillRect(x0, 0, 64 * colW, H); }
+      if (sec.name[0] !== 'A') { x.fillStyle = 'rgba(143,211,255,.045)'; x.fillRect(x0, 0, 64 * colW, H); }
       x.fillStyle = 'rgba(190,205,255,.75)';
       x.fillText(sec.name, x0 + 6, 10);
       if (i) { x.fillStyle = 'rgba(190,205,255,.35)'; x.fillRect(Math.round(x0), 0, 1, H); }
@@ -498,7 +601,11 @@ button:focus-visible,a:focus-visible,select:focus-visible,input:focus-visible{ou
       x.fillStyle = s % 16 === 0 ? 'rgba(190,205,255,.16)' : 'rgba(190,205,255,.06)';
       x.fillRect(Math.round(s * colW), top, 1, H - top);
     }
-    var g = songOf(sn);
+    if (v.writing) {
+      var wx = v.sections.length * 64 * colW;
+      x.fillStyle = 'rgba(159,240,193,.75)'; x.fillText('writing ' + v.writing + '…', wx + 6, 10);
+    }
+    var g = v.g;
     x.font = '500 11px "JetBrains Mono", monospace';
     for (var a = 0; a < nSlots;) {
       var b = a + 1;
@@ -566,11 +673,22 @@ button:focus-visible,a:focus-visible,select:focus-visible,input:focus-visible{ou
   });
 
   function statusText(sn, idx) {
+    if (E.on) {
+      var head = '<b>Keep composing.</b> ' + (E.written ? E.written + ' new section' + (E.written > 1 ? 's' : '') + ' written so far. ' : '');
+      if (!S.running) return head + 'Press play and new sections will be written as the song plays.';
+      return head + (E.composer ? 'Writing section ' + sectionName(E.letters) + ' from the song’s own material…' : 'The next section is ready.');
+    }
     if (idx === 0) return 'Pure noise. Every pitch, rhythm and chord is random.';
     var worst = 0; for (var i = 1; i < sn.groups.length; i++) if (sn.groups[i] > sn.groups[worst]) worst = i;
-    if (S.live && done()) return 'Converged on <b>' + segments[segments.length - 1].label + '</b>. Pick another genre to fine-tune from here, or start over from new noise.';
     var seg = segments.filter(function (s) { return s.at <= idx; }).pop();
-    return 'Learning <b>' + seg.label + '</b>. Hardest part right now: ' + L.GROUPS[worst].toLowerCase() + '.';
+    var hard = ' Hardest part right now: ' + L.GROUPS[worst].toLowerCase() + '.';
+    if (S.live && done()) {
+      if (seg.kind === 'noise') return 'The added noise has settled into <b>' + seg.label + '</b>. Scrub back to compare with the song before it, or add more.';
+      return 'Converged on <b>' + seg.label + '</b>. Add noise to vary it, pick another genre to fine-tune from here, or start over.';
+    }
+    if (seg.kind === 'noise') return (idx === seg.at ? 'Added ' + seg.note + ' noise' : 'Blending in the ' + seg.note + ' noise') + ', back towards <b>' + seg.label + '</b>.' + hard;
+    if (seg.kind === 'resize' && seg.note) return 'Training the new <b>C</b> section to fit the song.' + hard;
+    return 'Learning <b>' + seg.label + '</b>.' + hard;
   }
 
   function render() {
@@ -598,8 +716,9 @@ button:focus-visible,a:focus-visible,select:focus-visible,input:focus-visible{ou
       while (ev.history.length - 1 < want && performance.now() - t0 < 12) ev.step();
       if (S.skipping && done()) { S.skipping = false; segClock = RAMP; }
     }
-    if (ev.history.length !== lastLen || dirty) { lastLen = ev.history.length; dirty = false; render(); drawRoll(snap(), playStep()); }
-    else if (S.running && !reduce) drawRoll(snap(), playStep());
+    composeStep(6);
+    if (ev.history.length !== lastLen || dirty) { lastLen = ev.history.length; dirty = false; render(); drawRoll(rollView()); }
+    else if (S.running && !reduce) drawRoll(rollView());
     requestAnimationFrame(frame);
   }
   window.addEventListener('resize', function () { dirty = true; drawSky(); });
