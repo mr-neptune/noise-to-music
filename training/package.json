@@ -1,0 +1,11 @@
+{
+  "name": "noise-to-music-training",
+  "version": "1.0.0",
+  "description": "Trains the per-genre style models used by Noise to Music",
+  "author": "Wayne Wen",
+  "type": "commonjs",
+  "dependencies": {
+    "@tonejs/midi": "^2.0.28"
+  },
+  "private": true
+}
