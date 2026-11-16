@@ -307,6 +307,8 @@ button:focus-visible,a:focus-visible,select:focus-visible,input:focus-visible{ou
     revIn = ac.createGain(); revIn.gain.value = 0.9; revIn.connect(conv); conv.connect(comp);
     noiseBuf = ac.createBuffer(1, ac.sampleRate, ac.sampleRate);
     var nd = noiseBuf.getChannelData(0); for (var j = 0; j < nd.length; j++) nd[j] = Math.random() * 2 - 1;
+    // Safari: treat this as media playback so it keeps going in the background.
+    try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch (e) { /* not supported */ }
   }
 
   function send(node, dry, wet) {
@@ -505,7 +507,11 @@ button:focus-visible,a:focus-visible,select:focus-visible,input:focus-visible{ou
 
   function tick() {
     if (target.style.lead === 'lofi') startCrackle(); else stopCrackle();
-    while (nextBar < ac.currentTime + 0.15) {
+    // While the tab is hidden, animation frames stop and timers may only fire
+    // about once a second, so the timer does the optimizer's work and audio
+    // is scheduled further ahead.
+    if (document.hidden) work(performance.now());
+    while (nextBar < ac.currentTime + (document.hidden ? 1.5 : 0.15)) {
       if (E.on) {
         var e = endlessBar();
         // The counter-melody joins after the first section.
@@ -527,14 +533,34 @@ button:focus-visible,a:focus-visible,select:focus-visible,input:focus-visible{ou
     if (E.on) E.pos = 0;
     timer = setInterval(tick, 25); tick();
     setPlayButton(); syncControls();
+    mediaState();
   }
   function pause() {
     S.running = false;
     clearInterval(timer); timer = null; bars = [];
     if (ac) { stopCrackle(); ac.suspend(); }
     setPlayButton(); dirty = true;
+    mediaState();
   }
-  document.addEventListener('visibilitychange', function () { if (document.hidden && S.running) pause(); });
+  // Music keeps playing when the tab is hidden. Coming back, resume the audio
+  // if the browser interrupted it, and redraw.
+  document.addEventListener('visibilitychange', function () {
+    if (!document.hidden) { last = performance.now(); dirty = true; if (S.running && ac && ac.state !== 'running') ac.resume(); }
+  });
+  // Lock-screen and media-key controls.
+  function mediaState() {
+    if (!('mediaSession' in navigator)) return;
+    try {
+      if (!navigator.mediaSession.metadata && window.MediaMetadata) navigator.mediaSession.metadata = new MediaMetadata({ title: 'Noise to Music', artist: 'wayne-wen.dev' });
+      navigator.mediaSession.playbackState = S.running ? 'playing' : 'paused';
+    } catch (e) { /* not supported */ }
+  }
+  if ('mediaSession' in navigator) {
+    try {
+      navigator.mediaSession.setActionHandler('play', function () { if (!S.running) play(); });
+      navigator.mediaSession.setActionHandler('pause', function () { if (S.running) pause(); });
+    } catch (e) { /* not supported */ }
+  }
 
   function playStep() {
     if (!ac || !S.running) return -1;
@@ -707,16 +733,23 @@ button:focus-visible,a:focus-visible,select:focus-visible,input:focus-visible{ou
 
   // ---------- main loop ----------
   var last = performance.now(), lastLen = -1;
-  function frame(now) {
-    var dt = Math.min(0.1, (now - last) / 1000); last = now;
+  // Optimizer and composer work for the time since the last call. Runs from
+  // animation frames, or from the audio timer while the tab is hidden.
+  function work(now) {
+    var dt = Math.min(document.hidden ? 1.5 : 0.1, Math.max(0, now - last) / 1000); last = now;
+    // Hidden tabs get fewer, larger slices of time.
+    var budget = document.hidden ? Math.min(150, Math.max(12, dt * 400)) : 12;
     if (S.running || S.skipping) {
       segClock += dt * S.speed;
       var want = S.skipping ? segStart + MAX_STEPS : segStart + Math.round(MAX_STEPS * Math.pow(Math.min(1, segClock / RAMP), 2));
       var t0 = performance.now();
-      while (ev.history.length - 1 < want && performance.now() - t0 < 12) ev.step();
+      while (ev.history.length - 1 < want && performance.now() - t0 < budget) ev.step();
       if (S.skipping && done()) { S.skipping = false; segClock = RAMP; }
     }
-    composeStep(6);
+    composeStep(document.hidden ? budget / 2 : 6);
+  }
+  function frame(now) {
+    work(now);
     if (ev.history.length !== lastLen || dirty) { lastLen = ev.history.length; dirty = false; render(); drawRoll(rollView()); }
     else if (S.running && !reduce) drawRoll(rollView());
     requestAnimationFrame(frame);
