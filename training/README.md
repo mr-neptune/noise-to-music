@@ -11,6 +11,7 @@ The source data is not committed. It is downloaded into `~/data/midi`:
 - [tagtraum genre annotations](https://www.tagtraum.com/msd_genre_datasets.html) for the Million Song Dataset (`msd_tagtraum_cd1.cls`). They give `lmd_matched` its Jazz and RnB labels.
 - Artist lists over `clean_midi` for rock, funk, and extra jazz and R&B.
 - Classical scores from the [Mutopia Project](https://www.mutopiaproject.org/), in `~/data/mutopia`. Only pieces in the public domain or under CC BY (no ShareAlike) are used: 1,127 movements in 4/4, 2/2, 2/4, 6/8, 12/8 or 6/4 from 473 pieces. [mutopia-credits.tsv](mutopia-credits.tsv) lists each piece with its typesetter and license. They are engraved scores, so their rhythms are exact, triplets included. Pieces in 3/4 and 3/8 are skipped, since the engine writes in 4/4.
+- [PDMX](https://zenodo.org/records/15571083) (CC BY 4.0), in `~/data/pdmx` (`PDMX.csv` and `mid.tar.gz`): MuseScore scores that are public domain or CC0. `pdmx.py` takes the deduplicated subset without license conflicts, drops simplified arrangements and labels each score with a style from its composer (chopin, mozart, beethoven, impressionist, or classical for about 50 other composers): 3,783 scores, of which 1,711 movements are in a meter the engine can use.
 - The [Weimar Jazz Database](https://jazzomat.hfm-weimar.de/) (WJazzD) from the Jazzomat Research Project: 456 transcribed jazz solos with beat-level chord changes and bass pitches, in one SQLite file in `~/data/wjazzd`. The jazz model uses the 432 solos in 4/4. WJazzD is released under the [Open Database License (ODbL) 1.0](https://opendatacommons.org/licenses/odbl/1-0/). `web/models.json` contains information from it and is made available under the ODbL as well.
 
 Lo-fi has no MIDI dataset of its own. It is trained on jazz and R&B files under 95 BPM.
@@ -27,13 +28,15 @@ for i in 0 1 2 3 4 5; do node extract.mjs ~/data/midi/list.tsv ~/data/midi/extra
 #    melody's triplet beats (TRIPLETS). Compound meters (6/8, 12/8) become
 #    4/4 with triplet beats. list.tsv lines are "mutopia\t<path>".
 ALIGN=1 TRIPLETS=1 node extract.mjs ~/data/mutopia/list.tsv ~/data/midi/extracted/mutopia.jsonl
+python3 pdmx.py ~/data/pdmx/PDMX.csv ~/data/pdmx > ~/data/pdmx/list.tsv
+ALIGN=1 TRIPLETS=1 node extract.mjs ~/data/pdmx/list.tsv ~/data/midi/extracted/pdmx.jsonl
 
 #    Jazz solos from the Weimar Jazz Database (positions and chord symbols
 #    come straight from the database).
 node wjazzd.mjs ~/data/wjazzd/wjazzd.db ~/data/midi/extracted/wjazz.jsonl
 
 # 2. Train. Every 10th file per genre is held out.
-HOLDOUT=~/data/midi/extracted/holdout.json node train.mjs main.jsonl mutopia.jsonl wjazz.jsonl > ../web/models.json
+HOLDOUT=~/data/midi/extracted/holdout.json node train.mjs main.jsonl mutopia.jsonl pdmx.jsonl wjazz.jsonl > ../web/models.json
 
 # 3. Baselines. Score the held-out 4-bar windows with the browser's own code
 #    (engine.js) and store the 10th percentile of each loss component. For
@@ -61,3 +64,11 @@ Each component's loss is `max(0, value - baseline)`.
 ## Classical weighting
 
 Mozart's and Dvořák's orchestral works would otherwise make up half the classical bars, so each composer counts for at most 5,000 bars and Chopin counts triple. Chord labels in busy scores pick up passing tones (Cmaj9, C5), so classical folds them into common-practice chords: 5, maj7 and maj9 become major, 9 becomes 7, and m9 becomes m7.
+
+## Classical styles
+
+Chopin, Mozart, Beethoven and Impressionist (Debussy, Ravel, Satie, Fauré) each get their own model, trained only on that composer's or school's scores, so the styles don't average into one another. Impressionist keeps its seventh and ninth chords.
+
+## Melody, not figuration
+
+In piano scores the top line is often broken-chord figuration (arpeggios, Alberti patterns) rather than the tune. For classical, bars with at least 6 notes, mostly leaps of 3 semitones or more and at least 80% chord tones are left out of the melody statistics. Classical models also record how often a note is the third or later in a run of one repeated pitch (`rep3`), and the engine penalises melodies that go beyond it. The page plays the figuration as accompaniment instead.

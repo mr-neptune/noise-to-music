@@ -41,6 +41,48 @@
       bass: { density: 3.5, syncop: 0, interval: 4, chordTone: 0.95, center: 43 },
       style: { lead: 'piano', comp: 'sustain', bass: 'pianoLow', counter: 'strings', drums: 'none' },
     },
+    // Classical styles: each has its own model, trained on that composer's
+    // (or school's) music only, so styles don't average into each other.
+    chopin: {
+      name: 'Chopin', group: 'classical', key: 3, tempo: 72, swing: 0.5, scale: MAJOR,
+      chords: { 0: { '': 1 }, 2: { m: 0.8, m7: 0.5 }, 5: { '': 1 }, 7: { '': 1, 7: 1 }, 9: { m: 1 }, 11: { dim: 0.6 } },
+      progs: [[0, 5, 7, 0], [0, 9, 2, 7], [0, 2, 7, 0]],
+      start: { 0: 1 }, end: { 0: 1, 7: 0.7 },
+      harmony: { changes: 5, odd: 0.35 },
+      mel: { density: 6, syncop: 0.08, rest: 0.08, interval: 2.2, chordTone: 0.75, inScale: 0.95, center: 76, short: 0.15, rep: 0.5, recover: 1, endLong: 1, color: 0 },
+      bass: { density: 2, syncop: 0, interval: 5, chordTone: 0.95, center: 40 },
+      style: { lead: 'piano', comp: 'nocturne', bass: 'pianoLow', counter: 'piano', drums: 'none' },
+    },
+    mozart: {
+      name: 'Mozart', group: 'classical', key: 0, tempo: 120, swing: 0.5, scale: MAJOR,
+      chords: { 0: { '': 1 }, 2: { m: 0.6, 7: 0.4 }, 5: { '': 1 }, 7: { '': 1, 7: 1 }, 9: { m: 0.6 } },
+      progs: [[0, 5, 7, 0], [0, 7, 7, 0], [0, 2, 7, 0]],
+      start: { 0: 1 }, end: { 0: 1, 7: 0.8 },
+      harmony: { changes: 4, odd: 0.3 },
+      mel: { density: 6, syncop: 0.03, rest: 0.1, interval: 2.0, chordTone: 0.85, inScale: 1, center: 76, short: 0.15, rep: 0.6, recover: 1, endLong: 1, color: 0 },
+      bass: { density: 2, syncop: 0, interval: 4, chordTone: 1, center: 45 },
+      style: { lead: 'piano', comp: 'alberti', bass: 'pianoLow', counter: 'piano', drums: 'none' },
+    },
+    beethoven: {
+      name: 'Beethoven', group: 'classical', key: 0, tempo: 108, swing: 0.5, scale: MAJOR,
+      chords: { 0: { '': 1 }, 2: { m: 0.6 }, 5: { '': 1 }, 7: { '': 1, 7: 1 }, 9: { m: 0.8 }, 11: { dim: 0.8 } },
+      progs: [[0, 5, 7, 0], [0, 9, 5, 7], [0, 7, 0, 7]],
+      start: { 0: 1 }, end: { 0: 1, 7: 0.8 },
+      harmony: { changes: 4, odd: 0.3 },
+      mel: { density: 5, syncop: 0.06, rest: 0.12, interval: 2.6, chordTone: 0.85, inScale: 0.97, center: 72, short: 0.1, rep: 0.6, recover: 1, endLong: 1, color: 0 },
+      bass: { density: 3, syncop: 0, interval: 4, chordTone: 1, center: 40 },
+      style: { lead: 'piano', comp: 'pulse', bass: 'pianoLow', counter: 'strings', drums: 'none' },
+    },
+    impressionist: {
+      name: 'Impressionist', group: 'classical', key: 1, tempo: 66, swing: 0.5, scale: MAJOR,
+      chords: { 0: { maj7: 1, maj9: 1, '': 0.5 }, 2: { m7: 1, m9: 0.8 }, 4: { m7: 0.8 }, 5: { maj7: 1, maj9: 0.8 }, 7: { 9: 0.6, sus4: 0.6 }, 9: { m7: 1, m9: 0.8 } },
+      progs: [[0, 5, 0, 5], [0, 2, 5, 0], [5, 4, 2, 0]],
+      start: { 0: 1, 5: 0.7 }, end: { 0: 1, 5: 0.6 },
+      harmony: { changes: 3, odd: 0.2 },
+      mel: { density: 4, syncop: 0.1, rest: 0.2, interval: 2.4, chordTone: 0.6, inScale: 0.9, center: 74, short: 0.05, rep: 0.6, recover: 0.6, endLong: 1, color: 1 },
+      bass: { density: 1.5, syncop: 0, interval: 5, chordTone: 1, center: 40 },
+      style: { lead: 'piano', comp: 'rolled', bass: 'pianoLow', counter: 'vibes', drums: 'none' },
+    },
     jazz: {
       name: 'Jazz', key: 5, tempo: 128, swing: 0.64, scale: MAJOR,
       chords: { 0: { maj7: 1, maj9: 0.9 }, 2: { m7: 1, m9: 0.8, 7: 0.5 }, 4: { m7: 0.8, 7: 0.5 }, 5: { maj7: 0.8, 7: 0.5 }, 7: { 7: 1, 9: 0.9 }, 9: { m7: 1, 7: 0.6 } },
@@ -295,7 +337,7 @@
       bassRel: logMix(A.bassRel, B.bassRel), bassIvUni: logMix(A.bassIvUni, B.bassIvUni), bassIvBi: logMix(A.bassIvBi, B.bassIvBi),
       melPat: pat(A.melPat, B.melPat), bassPat: pat(A.bassPat, B.bassPat),
       notesPerBar: num('notesPerBar'), melCenter: num('melCenter'), melSpan: num('melSpan'), bassCenter: num('bassCenter'),
-      sim02: num('sim02'), sim13: num('sim13'), base, lo, hr: logMix(A.hr, B.hr),
+      sim02: num('sim02'), sim13: num('sim13'), rep3: A.rep3 === undefined || B.rep3 === undefined ? undefined : num('rep3'), base, lo, hr: logMix(A.hr, B.hr),
     };
   }
 
@@ -343,13 +385,15 @@
 
     const mel = parse(g.mel), notes = mel.notes, n = notes.length;
     if (n < 3) return null;
-    let iv = 0, ivn = 0, prev = -1, rel = 0, fill = 0, fn = 0, sum = 0, lo = 999, hi = -999, wide = 0;
+    let iv = 0, ivn = 0, prev = -1, run = 1, reps = 0, rel = 0, fill = 0, fn = 0, sum = 0, lo = 999, hi = -999, wide = 0;
     const ivHist = new Float64Array(25), relHist = new Float64Array(12), relExp = new Float64Array(12);
     for (let i = 0; i < n; i++) {
       const nt = notes[i], nx = notes[i + 1];
       if (nx) {
         const gap = nx.s - nt.s, r = nt.len / Math.min(gap, 16);
         fill -= M.fill[r <= 0.5 ? 0 : r < 0.95 ? 1 : 2]; fn++;
+        run = gap <= 16 && nx.p === nt.p ? run + 1 : 1;
+        if (run >= 3) reps++;
         if (gap <= 16) {
           const k = ivIdx(nx.p - nt.p);
           iv -= prev >= 0 ? M.ivBi[prev * 25 + k] : M.ivUni[k]; ivn++; ivHist[k]++; prev = k;
@@ -364,6 +408,7 @@
     }
     c.melIv = ivn ? iv / ivn : 4;
     c.wideLeaps = ivn ? wide / ivn : 0;
+    c.repeats = n > 1 ? reps / (n - 1) : 0;
     c.melRel = rel / n;
     c.fill = fn ? fill / fn : 1.5;
     c.ivTV = tv(ivHist, M.ivUniP);
@@ -416,6 +461,8 @@
     // Leaps wider than an octave are rare in real melodies (the interval
     // model folds them into its ±12 bucket).
     groups[1] += 4 * c.wideLeaps;
+    // Long runs of one repeated pitch, beyond what the genre does.
+    if (M.rep3 !== undefined) groups[1] += 4 * Math.max(0, c.repeats - 1.25 * M.rep3);
     // A section that never leaves one chord root is a vamp, not a section.
     let moves = 0;
     for (let s = 1; s < SLOTS; s++) if (w.roots[s] !== w.roots[0]) moves++;

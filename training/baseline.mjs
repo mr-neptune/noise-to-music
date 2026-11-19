@@ -10,7 +10,7 @@ vm.runInThisContext(fs.readFileSync(here + '../web/engine.js', 'utf8'));
 const L = globalThis.MusicLab;
 const json = JSON.parse(fs.readFileSync(modelsPath, 'utf8'));
 const holdout = JSON.parse(fs.readFileSync(holdoutPath, 'utf8'));
-const MINOR = { classical: false, jazz: false, lofi: false, rock: true, funk: true };
+const MINOR = { classical: false, chopin: false, mozart: false, beethoven: false, impressionist: false, jazz: false, lofi: false, rock: true, funk: true };
 
 function windows(d, key) {
   const out = [];
@@ -18,6 +18,7 @@ function windows(d, key) {
   for (let w = 0; (w + 4) * 16 <= d.end; w += 4) {
     const s0 = w * 16, chords = d.chords.slice(w * 2, w * 2 + 8);
     if (chords.length < 8 || chords.some((c) => !c)) continue;
+    if ((d.fig || []).some((b) => b >= w && b < w + 4)) continue;
     const mel = d.mel.filter((n) => n[0] >= s0 && n[0] < s0 + 64);
     if (mel.length < 4) continue;
     const g = { mel: new Int8Array(64).fill(L.REST), bass: new Int8Array(64).fill(L.REST), roots: new Int8Array(8), quals: new Int8Array(8) };
@@ -41,7 +42,8 @@ function windows(d, key) {
 const Q = +(process.env.Q || 0.1);
 const quantile = (a) => { const s = [...a].sort((x, y) => x - y); return s[Math.floor(s.length * Q)]; };
 const at = (a, q) => { const s = [...a].sort((x, y) => x - y); return s[Math.floor(s.length * q)]; };
-const BANDS = { classical: { melPat: [0.2, 0.5] } };
+const BAND = { melPat: [0.2, 0.5] };
+const BANDS = { classical: BAND, chopin: BAND, mozart: BAND, beethoven: BAND, impressionist: BAND };
 for (const [genre, model] of Object.entries(json.models)) {
   delete model.base;
   const M = L.mixModel(model, model, 0), key = L.GENRES[genre].key;

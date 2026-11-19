@@ -9,9 +9,35 @@ const NQ = 11;
 // Quality index -> class: 0 major, 1 minor, 2 dominant, 3 other.
 const QCLASS = [0, 1, 3, 2, 0, 1, 2, 1, 0, 3, 3];
 const NAMES = ['', 'm', '5', '7', 'maj7', 'm7', '9', 'm9', 'maj9', 'dim', 'sus4'];
+const PCS = [[0, 4, 7], [0, 3, 7], [0, 7], [0, 4, 7, 10], [0, 4, 7, 11], [0, 3, 7, 10], [0, 2, 4, 7, 10], [0, 2, 3, 7, 10], [0, 2, 4, 7, 11], [0, 3, 6], [0, 5, 7]];
+
+// Bars where the top line is broken-chord figuration (arpeggios, Alberti
+// patterns) rather than a tune: many notes, mostly leaps, nearly all chord
+// tones. The melody model skips them, so it learns themes, not decoration.
+function figurationBars(d) {
+  const bars = new Map();
+  for (const n of d.mel) { const b = n[0] >> 4; if (!bars.has(b)) bars.set(b, []); bars.get(b).push(n); }
+  const out = [];
+  for (const [b, ns] of bars) {
+    if (ns.length < 6) continue;
+    let leaps = 0, tones = 0;
+    for (let i = 0; i < ns.length; i++) {
+      if (i && Math.abs(ns[i][2] - ns[i - 1][2]) >= 3) leaps++;
+      const c = d.chords[ns[i][0] >> 3];
+      if (c && PCS[c[1]].includes((((ns[i][2] - c[0]) % 12) + 12) % 12)) tones++;
+    }
+    if (leaps / (ns.length - 1) >= 0.6 && tones / ns.length >= 0.8) out.push(b);
+  }
+  return out.sort((a, b) => a - b);
+}
 const strength = (s) => { const k = s % 16; return k === 0 || k === 8 ? 0 : k === 4 || k === 12 ? 1 : k % 2 === 0 ? 2 : 3; };
 const ivIndex = (d) => Math.max(-12, Math.min(12, d)) + 12;
 
+// Classical sources: Mutopia scores, and PDMX scores labelled by style
+// (pdmx.py writes "pdmx-<style>" as the genre).
+const CLASSICAL = ['mutopia', 'pdmx-chopin', 'pdmx-mozart', 'pdmx-beethoven', 'pdmx-impressionist', 'pdmx-classical'];
+const MUTOPIA_STYLE = { ChopinFF: 'chopin', MozartWA: 'mozart', BeethovenLv: 'beethoven', DebussyC: 'impressionist', SatieE: 'impressionist', FaureG: 'impressionist', RavelM: 'impressionist' };
+const styleOf = (d) => (d.genre.startsWith('pdmx-') ? d.genre.slice(5) : MUTOPIA_STYLE[composerOf(d)] || 'classical');
 // Passing tones in busy scores read as added-note chords (Cmaj9, C5). For
 // classical, fold those into the chords common-practice harmony uses:
 // 5, maj7, maj9 -> major; 9 -> 7; m9 -> m7.
@@ -21,7 +47,13 @@ const COMMON_PRACTICE = { 2: 0, 4: 0, 6: 3, 7: 5, 8: 0 };
 const GENRES = {
   // Scores from the Mutopia Project (public domain or CC BY), weighted so no
   // composer outweighs the rest and Chopin counts triple.
-  classical: { sources: ['mutopia'], minor: false, weight: composerWeights, qualities: COMMON_PRACTICE },
+  classical: { sources: CLASSICAL, minor: false, weight: composerWeights, qualities: COMMON_PRACTICE, figuration: true },
+  // Styles: one model each, from that composer or school only.
+  chopin: { sources: CLASSICAL, minor: false, filter: (d) => styleOf(d) === 'chopin', qualities: COMMON_PRACTICE, figuration: true },
+  mozart: { sources: CLASSICAL, minor: false, filter: (d) => styleOf(d) === 'mozart', qualities: COMMON_PRACTICE, figuration: true },
+  beethoven: { sources: CLASSICAL, minor: false, filter: (d) => styleOf(d) === 'beethoven', qualities: COMMON_PRACTICE, figuration: true },
+  // Impressionist harmony keeps its sevenths and ninths.
+  impressionist: { sources: CLASSICAL, minor: false, filter: (d) => styleOf(d) === 'impressionist', qualities: { 2: 0 }, figuration: true },
   jazz: { sources: ['jazz', 'wjazz'], minor: false },
   lofi: { sources: ['jazz', 'rnb'], minor: false, filter: (d) => d.tempo < 95 },
   rock: { sources: ['rock'], minor: true },
@@ -29,11 +61,11 @@ const GENRES = {
 };
 
 // Composer from a Mutopia path (".../ftp__ChopinFF__O28__...mid").
-const composerOf = (d) => (d.path.split('/').pop().split('__')[1] || '?');
+const composerOf = (d) => (d.genre === 'mutopia' ? d.path.split('/').pop().split('__')[1] || '?' : d.genre);
 function composerWeights(docs) {
   const bars = {};
   for (const d of docs) bars[composerOf(d)] = (bars[composerOf(d)] || 0) + d.end / 16;
-  const CAP = 5000, BOOST = { ChopinFF: 3 };
+  const CAP = 5000, BOOST = { ChopinFF: 3, 'pdmx-chopin': 3 };
   return (d) => { const c = composerOf(d); return Math.min(1, CAP / bars[c]) * (BOOST[c] || 1); };
 }
 // A bar's melody rhythm: x = onset, . = none; a beat in [..] is a triplet.
@@ -49,7 +81,7 @@ function showPat(mk) {
 function newStats() {
   return {
     files: 0, bars: 0, tempos: [],
-    melPat: new Map(), melStep: new Float64Array(20), tri: 0, beats: 0, melBars: 0, melNotesPerBar: [],
+    melPat: new Map(), melStep: new Float64Array(20), tri: 0, beats: 0, fig: 0, rep3: 0, repN: 0, melBars: 0, melNotesPerBar: [],
     fill: new Float64Array(3),
     ivUni: new Float64Array(25), ivBi: new Float64Array(25 * 25),
     melRel: new Float64Array(4 * 4 * 12),
@@ -77,7 +109,9 @@ function addFile(st, d, genre, w = 1) {
   st.bars += nBars;
   // Melody beats played as triplets: bits 16-19 of the bar's pattern.
   const tri = new Set(d.tri || []);
-  const mel = d.mel, bass = d.bass, chords = d.chords;
+  const fig = new Set(d.fig || []);
+  st.fig += fig.size;
+  const mel = fig.size ? d.mel.filter((n) => !fig.has(n[0] >> 4)) : d.mel, bass = d.bass, chords = d.chords;
   const chordAt = (s) => chords[s >> 3];
 
   // Rhythm patterns over the active span of each line.
@@ -88,7 +122,7 @@ function addFile(st, d, genre, w = 1) {
     for (const [s] of notes) { const b = s >> 4; if (b < nBars) masks[b] |= 1 << (s % 16); }
     if (withTri) for (const t of tri) { const b = t >> 2; if (b < nBars) { masks[b] &= ~(1 << ((t % 4) * 4 + 3)); masks[b] |= 1 << (16 + (t % 4)); } }
     for (let b = first; b <= last && b < nBars; b++) {
-      if (!masks[b]) continue;
+      if (!masks[b] || (withTri && fig.has(b))) continue;
       map.set(masks[b], (map.get(masks[b]) || 0) + w);
       for (let i = 0; i < step.length; i++) if (masks[b] & (1 << i)) step[i] += w;
       st[key] += w;
@@ -99,13 +133,15 @@ function addFile(st, d, genre, w = 1) {
   patterns(bass, st.bassPat, st.bassStep, 'bassBars');
 
   // Melody intervals, fill ratio and chord-relative pitch.
-  let prevIv = -1;
+  let prevIv = -1, run = 1;
   for (let i = 0; i < mel.length; i++) {
     const [s, len, p] = mel[i];
     const next = mel[i + 1];
     if (next) {
       const gap = next[0] - s;
       st.fill[len / Math.min(gap, 16) <= 0.5 ? 0 : len / Math.min(gap, 16) < 0.95 ? 1 : 2] += w;
+      run = gap <= 16 && next[2] === p ? run + 1 : 1;
+      st.repN += w; if (run >= 3) st.rep3 += w;
       if (gap <= 16) {
         const iv = ivIndex(next[2] - p);
         st.ivUni[iv] += w;
@@ -156,13 +192,15 @@ function addFile(st, d, genre, w = 1) {
   }
 
   // Register and phrase structure over aligned 4-bar windows.
-  const g = grid(mel, nBars * 16);
-  for (let w = 0; w + 4 <= nBars; w += 4) {
-    const ps = mel.filter((n) => n[0] >= w * 16 && n[0] < w * 16 + 64).map((n) => n[2]);
+  // Windows with figuration bars are left out.
+  const g = grid(d.mel, nBars * 16);
+  for (let win = 0; win + 4 <= nBars; win += 4) {
+    if ([0, 1, 2, 3].some((k) => fig.has(win + k))) continue;
+    const ps = d.mel.filter((n) => n[0] >= win * 16 && n[0] < win * 16 + 64).map((n) => n[2]);
     if (ps.length < 6) continue;
     st.melMean.push([ps.reduce((a, b) => a + b) / ps.length, w]);
     st.melSpan.push([Math.max(...ps) - Math.min(...ps), w]);
-    const sim = (a, b) => { let same = 0; for (let i = 0; i < 16; i++) if (g[(w + a) * 16 + i] === g[(w + b) * 16 + i]) same++; return same / 16; };
+    const sim = (a, b) => { let same = 0; for (let i = 0; i < 16; i++) if (g[(win + a) * 16 + i] === g[(win + b) * 16 + i]) same++; return same / 16; };
     st.sim02.push([sim(0, 2), w]); st.sim13.push([sim(1, 3), w]);
   }
 }
@@ -192,9 +230,11 @@ function patternModel(map, step, bars, topK) {
 
 function finish(st) {
   return {
-    files: st.files, bars: st.bars, tempo: median(st.tempos),
+    files: st.files, bars: st.bars, figBars: st.fig, tempo: median(st.tempos),
     melPat: patternModel(st.melPat, st.melStep, st.melBars, 400),
     notesPerBar: round(mean(st.melNotesPerBar), 3), triplets: round(st.tri / (st.beats || 1), 3),
+    // Share of notes that are the third or later in a run of one pitch.
+    rep3: round(st.rep3 / (st.repN || 1), 3),
     fill: normRows(st.fill, 3, 1),
     ivUni: normRows(st.ivUni, 25, 0.5), ivBi: normRows(st.ivBi, 25, 0.5),
     melRel: normRows(st.melRel, 12, 0.5),
@@ -228,11 +268,16 @@ for (const [genre, cfg] of Object.entries(GENRES)) {
   for (const src of cfg.sources) for (const d of bySource[src] || []) {
     if (cfg.filter && !cfg.filter(d)) continue;
     const q = cfg.qualities;
-    docs.push(q ? { ...d, chords: d.chords.map((c) => c && [c[0], c[1] in q ? q[c[1]] : c[1]]) } : d);
+    const doc = q ? { ...d, chords: d.chords.map((c) => c && [c[0], c[1] in q ? q[c[1]] : c[1]]) } : { ...d };
+    if (cfg.figuration) doc.fig = figurationBars(doc);
+    docs.push(doc);
   }
   const weigh = cfg.weight ? cfg.weight(docs) : () => 1;
   docs.forEach((d, i) => { if (i % 10 !== 0) addFile(st, d, genre, weigh(d)); });
   models[genre] = finish(st);
+  // The repeated-note limit is for classical, whose generated tunes otherwise
+  // drone on one pitch; other genres repeat notes idiomatically.
+  if (!cfg.figuration) delete models[genre].rep3;
   holdout[genre] = docs.filter((_, i) => i % 10 === 0);
 }
 
@@ -241,7 +286,7 @@ const log = (...a) => console.error(...a);
 const NOTE = ['C', 'C#', 'D', 'Eb', 'E', 'F', 'F#', 'G', 'Ab', 'A', 'Bb', 'B'];
 for (const [g, m] of Object.entries(models)) {
   log('  chord changes per 4 bars:', m.hr.map((p, i) => `${i}:${(p * 100).toFixed(0)}%`).join(' '));
-  log(`\n== ${g}: ${m.files} files, ${m.bars} bars, tempo ${m.tempo}, notes/bar ${m.notesPerBar}, triplet beats ${(m.triplets * 100).toFixed(1)}%, center ${m.melCenter}, span ${m.melSpan}, bass ${m.bassCenter}, sim02 ${m.sim02}, sim13 ${m.sim13}`);
+  log(`\n== ${g}: ${m.files} files, ${m.bars} bars, tempo ${m.tempo}, notes/bar ${m.notesPerBar}, triplet beats ${(m.triplets * 100).toFixed(1)}%, figuration bars ${(100 * m.figBars / m.bars).toFixed(1)}%, center ${m.melCenter}, span ${m.melSpan}, bass ${m.bassCenter}, sim02 ${m.sim02}, sim13 ${m.sim13}`);
   const deg = m.degree.map((p, i) => [p, NOTE[Math.floor(i / NQ)] + NAMES[i % NQ]]).sort((a, b) => b[0] - a[0]).slice(0, 10);
   log('  chords (rel. to C tonic):', deg.map(([p, n]) => `${n} ${(p * 100).toFixed(1)}%`).join(', '));
   const changes = [];
