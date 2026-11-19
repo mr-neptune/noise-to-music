@@ -175,7 +175,7 @@ button:focus-visible,a:focus-visible,select:focus-visible,input:focus-visible{ou
       <p><b>The optimizer.</b> A genetic algorithm with a population of 200 songs. Each step mutates pitches, rhythms and chords, moves whole bars to a new chord, recombines bars from good parents and keeps what lowers the loss. It descends the loss like training does, only without gradients. Switch genre mid-run and it fine-tunes from where it is.</p>
       <p><b>Add noise.</b> Once a song has settled, Add noise scrambles a share of its notes and chords (light 15%, medium 35%, heavy 70%) in every member of the population, and the optimizer works the noise back into music. Light noise gives a variation on the same song. Heavy noise usually gives a new one with the same chords. Scrub the step slider back to compare. Start brand new noise throws everything away instead.</p>
       <p><b>Longer songs.</b> The 32-bar form adds a third section, C. Switching length keeps the sections already trained, and only C starts from noise.</p>
-      <p><b>Keep composing.</b> While the song plays, new sections keep being written onto the end. No random notes are added here. Each new section starts from bars already in the song, with chords the genre model proposes, and is trained in the background to follow on from the previous section without repeating it. It joins the song only when it's finished, so you only hear finished sections.</p>
+      <p><b>Keep composing.</b> While the song plays, new sections keep being written onto the end. No random notes are added here. Each new section starts from bars already in the song, with chords the genre model proposes, and is trained in the background to follow on from the previous section without repeating it. It joins the song only once its loss has stopped improving (at least 150 steps, at most 600), so you only hear finished sections. If you switch it on before the song has converged, it waits for that first.</p>
       <p><b>What is learned.</b> The notes and chords. Instruments, the comping rhythm (for the classical styles, an Alberti bass, broken chords, pulsing or rolled chords under the tune) and the backing drums are genre presets. Everything runs in your browser, and nothing is sent anywhere.</p>
       <p class="note">Training data: Lakh MIDI Dataset (Colin Raffel, CC BY 4.0) with tagtraum genre annotations (Hendrik Schreiber), and artist-labelled songs from its clean_midi subset. Jazz also learns from 432 transcribed solos, with their chord changes and bass lines, in the <a href="https://jazzomat.hfm-weimar.de/">Weimar Jazz Database</a> (Jazzomat Research Project), made available under the <a href="https://opendatacommons.org/licenses/odbl/1-0/">Open Database License</a>. The trained models (<a href="models.json">models.json</a>) contain information from it and are available under the ODbL too. Classical learns from about 2,800 scored movements (Chopin, Mozart, Beethoven, Debussy, Bach, Schubert and others, including orchestral and band music): 473 pieces from the <a href="https://www.mutopiaproject.org/">Mutopia Project</a>, in the public domain or under CC BY (<a href="https://github.com/mr-neptune/noise-to-music/blob/main/training/mutopia-credits.tsv">credits for each piece</a>), and public-domain MuseScore scores from <a href="https://zenodo.org/records/15571083">PDMX</a> (Long, Novack, Berg-Kirkpatrick and McAuley, CC BY 4.0). Each classical style has its own model, trained on that composer's or school's music only. There is no lo-fi MIDI dataset, so Lo-fi is learned from jazz and R&amp;B under 95 BPM.</p>
       <p class="note">Next in the lab: evolving drum grooves, a skyline that grows into a city, and random characters that settle into a haiku. On iPhone, turn off silent mode to hear audio.</p>
@@ -438,16 +438,27 @@ button:focus-visible,a:focus-visible,select:focus-visible,input:focus-visible{ou
   // The song as a growing list of 4-bar sections. The optimizer writes the
   // next section in the background, starting from the song's own material;
   // a section joins the song only once it is finished.
-  var E = { on: false, sections: [], composer: null, seed: 1, pos: 0, written: 0 };
-  var SECTION_GENS = 250, AHEAD = 2;
+  var E = { on: false, sections: [], composer: null, seed: 1, pos: 0, written: 0, follow: false };
+  // A new section trains until its loss stops improving: at least MIN_GENS
+  // steps, then until the best loss improved by less than 0.5% over the last
+  // PLATEAU steps, and at most MAX_GENS.
+  var MIN_GENS = 150, MAX_GENS = 600, PLATEAU = 80, AHEAD = 2;
   function sectionName(i) { return 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'[i % 26] + (i >= 26 ? Math.floor(i / 26) + 1 : ''); }
-  function endlessStart() {
-    var g = snap().genome, form = L.sectionsOf(g);
-    E.on = true; E.composer = null; E.written = 0; E.seed = S.seed;
-    E.sections = form.map(function (sec) {
+  // The song's own sections, from the optimizer's current best.
+  function songSections() {
+    var g = ev.history[ev.history.length - 1].genome;
+    return L.sectionsOf(g).map(function (sec) {
       var s = sec.name.charCodeAt(0) - 65;
       return { name: sec.name[0], w: L.windowOf(g, [s * 4, s * 4 + 1, s * 4 + 2, s * 4 + 3]) };
     });
+  }
+  function endlessStart() {
+    var form = L.sectionsOf(snap().genome);
+    E.on = true; E.composer = null; E.written = 0; E.seed = S.seed;
+    // Until the song itself has converged, play its latest version and write
+    // nothing new: new sections are only built on finished material.
+    E.follow = !done();
+    E.sections = songSections();
     E.letters = S.sections;
     E.pos = S.running ? barCount % (form.length * 4) : 0;
     $('endless').checked = true; dirty = true;
@@ -455,15 +466,26 @@ button:focus-visible,a:focus-visible,select:focus-visible,input:focus-visible{ou
   function endlessStop() { E.on = false; E.composer = null; $('endless').checked = false; barCount = 0; dirty = true; }
   function composeStep(budget) {
     if (!E.on || !S.running) return;
+    if (E.follow) {
+      E.sections = songSections(); dirty = true;
+      if (!done()) return;
+      E.follow = false;
+    }
     if (!E.composer) {
       if (E.sections.length - Math.floor(E.pos / 4) > AHEAD || E.sections.length >= 400) return;
       var seen = {}, pool = [];
       E.sections.forEach(function (x) { if (!seen[x.name]) { seen[x.name] = 1; pool.push(x.w); } });
       E.composer = L.composeNext(target, E.sections[E.sections.length - 1].w, pool, E.seed++);
     }
-    var t0 = performance.now();
-    while (E.composer.gen < SECTION_GENS && performance.now() - t0 < budget) E.composer.step();
-    if (E.composer.gen >= SECTION_GENS) {
+    var t0 = performance.now(), c = E.composer;
+    var settled = function () {
+      if (c.gen < MIN_GENS) return false;
+      if (c.gen >= MAX_GENS) return true;
+      var before = c.history[c.gen - PLATEAU].loss, now = c.history[c.gen].loss;
+      return before - now < 0.005 * before;
+    };
+    while (!settled() && performance.now() - t0 < budget) c.step();
+    if (settled()) {
       var g = E.composer.best().g;
       E.sections.push({ name: sectionName(E.letters++), w: L.windowOf(g, [4, 5, 6, 7]), loss: E.composer.best().loss });
       E.composer = null; E.written++; dirty = true;
@@ -725,7 +747,8 @@ button:focus-visible,a:focus-visible,select:focus-visible,input:focus-visible{ou
     if (E.on) {
       var head = '<b>Keep composing.</b> ' + (E.written ? E.written + ' new section' + (E.written > 1 ? 's' : '') + ' written so far. ' : '');
       if (!S.running) return head + 'Press play and new sections will be written as the song plays.';
-      return head + (E.composer ? 'Writing section ' + sectionName(E.letters) + ' from the song’s own material…' : 'The next section is ready.');
+      if (E.follow) return head + 'Waiting for the song to converge (step ' + (ev.history.length - 1 - segStart) + ' of ' + MAX_STEPS + ') before writing anything new. Until then you hear its latest version.';
+      return head + (E.composer ? 'Writing section ' + sectionName(E.letters) + ' from the song’s own material (step ' + E.composer.gen + ', loss ' + E.composer.best().loss.toFixed(2) + '). It joins once its loss stops improving.' : 'The next section is ready.');
     }
     if (idx === 0) return 'Pure noise. Every pitch, rhythm and chord is random.';
     var worst = 0; for (var i = 1; i < sn.groups.length; i++) if (sn.groups[i] > sn.groups[worst]) worst = i;
