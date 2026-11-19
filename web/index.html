@@ -173,7 +173,7 @@ button:focus-visible,a:focus-visible,select:focus-visible,input:focus-visible{ou
       <p><b>Longer songs.</b> The 32-bar form adds a third section, C. Switching length keeps the sections already trained, and only C starts from noise.</p>
       <p><b>Keep composing.</b> While the song plays, new sections keep being written onto the end. No random notes are added here. Each new section starts from bars already in the song, with chords the genre model proposes, and is trained in the background to follow on from the previous section without repeating it. It joins the song only when it's finished, so you only hear finished sections.</p>
       <p><b>What is learned.</b> The notes and chords. Instruments, the comping rhythm and the backing drums are genre presets. Everything runs in your browser, and nothing is sent anywhere.</p>
-      <p class="note">Training data: Lakh MIDI Dataset (Colin Raffel, CC BY 4.0) with tagtraum genre annotations (Hendrik Schreiber), and artist-labelled songs from its clean_midi subset. Jazz also learns from 432 transcribed solos, with their chord changes and bass lines, in the <a href="https://jazzomat.hfm-weimar.de/">Weimar Jazz Database</a> (Jazzomat Research Project), made available under the <a href="https://opendatacommons.org/licenses/odbl/1-0/">Open Database License</a>. The trained models (<a href="models.json">models.json</a>) contain information from it and are available under the ODbL too. There is no lo-fi MIDI dataset, so Lo-fi is learned from jazz and R&amp;B under 95 BPM. The classical model is smaller (about 100 pieces) and noisier, because most of those files are human performances rather than quantized scores.</p>
+      <p class="note">Training data: Lakh MIDI Dataset (Colin Raffel, CC BY 4.0) with tagtraum genre annotations (Hendrik Schreiber), and artist-labelled songs from its clean_midi subset. Jazz also learns from 432 transcribed solos, with their chord changes and bass lines, in the <a href="https://jazzomat.hfm-weimar.de/">Weimar Jazz Database</a> (Jazzomat Research Project), made available under the <a href="https://opendatacommons.org/licenses/odbl/1-0/">Open Database License</a>. The trained models (<a href="models.json">models.json</a>) contain information from it and are available under the ODbL too. Classical learns from 473 engraved scores (Chopin, Mozart, Beethoven, Bach, Schubert and others) from the <a href="https://www.mutopiaproject.org/">Mutopia Project</a>, all in the public domain or under CC BY (<a href="https://github.com/mr-neptune/noise-to-music/blob/main/training/mutopia-credits.tsv">credits for each piece</a>). There is no lo-fi MIDI dataset, so Lo-fi is learned from jazz and R&amp;B under 95 BPM.</p>
       <p class="note">Next in the lab: evolving drum grooves, a skyline that grows into a city, and random characters that settle into a haiku. On iPhone, turn off silent mode to hear audio.</p>
     </div>
   </section>
@@ -466,13 +466,15 @@ button:focus-visible,a:focus-visible,select:focus-visible,input:focus-visible{ou
     var beat = 60 / T.tempo, sw = T.swing;
     var offs = [0, sw * beat / 2, sw * beat, sw * beat + (1 - sw) * beat / 2];
     var at = function (k) { return t0 + Math.floor(k / 4) * beat + offs[((k % 4) + 4) % 4]; };
+    // Triplet steps fall between 16ths (see L.posOf) and are played straight.
+    var atPos = function (x) { return x === Math.floor(x) ? at(x) : t0 + x / 4 * beat; };
     var base = bar * 16;
     var tracks = [[g.mel, st.lead, 0.2], [g.bass, st.bass, 0.32]];
     if (counter) tracks.push([g.ctr, st.counter, 0.11]);
     tracks.forEach(function (tr) {
       L.parse(tr[0]).notes.forEach(function (n) {
         if (n.s < base || n.s >= base + 16) return;
-        var k = n.s - base, t = at(k), dur = Math.max(0.05, at(k + n.len) - t - 0.02);
+        var k = n.s - base, t = atPos(L.posOf(tr[0], n.s) - base), dur = Math.max(0.05, atPos(L.posOf(tr[0], n.s + n.len) - base) - t - 0.02);
         voice(tr[1], t, n.p, dur, tr[2] * (k % 4 === 0 ? 1.1 : 0.9));
       });
     });
@@ -646,12 +648,12 @@ button:focus-visible,a:focus-visible,select:focus-visible,input:focus-visible{ou
     }
     [[g.mel, '#f4a6bd', '#ffe0ea'], [g.ctr, '#9ff0c1', '#e2fff0'], [g.bass, '#8fd3ff', '#e1f4ff']].forEach(function (tr) {
       L.parse(tr[0]).notes.forEach(function (n) {
-        var on = ps >= n.s && ps < n.s + n.len;
+        var s0 = L.posOf(tr[0], n.s), s1 = L.posOf(tr[0], n.s + n.len), on = ps >= s0 && ps < s1;
         x.fillStyle = on ? tr[2] : tr[1];
         x.shadowColor = tr[1]; x.shadowBlur = on ? 14 : 6;
         var h = Math.max(3, rowH * 1.4);
         x.beginPath();
-        if (x.roundRect) x.roundRect(n.s * colW + 1, y(n.p) - h * 0.2, n.len * colW - 2, h, 2); else x.rect(n.s * colW + 1, y(n.p) - h * 0.2, n.len * colW - 2, h);
+        if (x.roundRect) x.roundRect(s0 * colW + 1, y(n.p) - h * 0.2, (s1 - s0) * colW - 2, h, 2); else x.rect(s0 * colW + 1, y(n.p) - h * 0.2, (s1 - s0) * colW - 2, h);
         x.fill();
       });
     });

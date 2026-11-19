@@ -30,6 +30,7 @@ function windows(d, key) {
       }
     };
     put(g.mel, mel);
+    for (const t of d.tri || []) { const k = t * 4 + 3 - s0; if (k >= 0 && k < 64) g.mel[k] = L.TRIP; }
     if (d.bass) put(g.bass, d.bass.filter((n) => n[0] >= s0 && n[0] < s0 + 64));
     chords.forEach((c, i) => { g.roots[i] = (((c[0] - d.tonic) % 12) + 12) % 12; g.quals[i] = c[1]; });
     out.push(g);
@@ -39,6 +40,8 @@ function windows(d, key) {
 
 const Q = +(process.env.Q || 0.1);
 const quantile = (a) => { const s = [...a].sort((x, y) => x - y); return s[Math.floor(s.length * Q)]; };
+const at = (a, q) => { const s = [...a].sort((x, y) => x - y); return s[Math.floor(s.length * q)]; };
+const BANDS = { classical: { melPat: [0.2, 0.5] } };
 for (const [genre, model] of Object.entries(json.models)) {
   delete model.base;
   const M = L.mixModel(model, model, 0), key = L.GENRES[genre].key;
@@ -55,6 +58,13 @@ for (const [genre, model] of Object.entries(json.models)) {
   }
   model.base = {};
   for (const k in vals) model.base[k] = +quantile(vals[k]).toFixed(4);
+  // Bands: these components must land between two quantiles of real music,
+  // so the optimizer can't settle on the most predictable rhythm.
+  delete model.lo;
+  for (const [k, [lo, hi]] of Object.entries(BANDS[genre] || {})) {
+    (model.lo ||= {})[k] = +at(vals[k], lo).toFixed(4);
+    model.base[k] = +at(vals[k], hi).toFixed(4);
+  }
   console.error(genre, `${count} windows from ${docs.length} files`, JSON.stringify(model.base));
 }
 fs.writeFileSync(modelsPath, JSON.stringify(json));

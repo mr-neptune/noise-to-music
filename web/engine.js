@@ -10,7 +10,10 @@
   'use strict';
 
   const STEPS = 64, BAR = 16, SLOTS = 8, SLOT = 8;
-  const REST = -1, HOLD = -2;
+  // A melody step holds a pitch, HOLD (the note goes on) or REST. TRIP on a
+  // beat's last 16th turns that beat into a triplet: its first three steps
+  // then fall on thirds of the beat.
+  const REST = -1, HOLD = -2, TRIP = -3;
   const MEL_LO = 55, MEL_HI = 88, BASS_LO = 28, BASS_HI = 55;
 
   const QUALITIES = [
@@ -165,7 +168,7 @@
   function randomBars(g, rnd, from, to) {
     for (let i = from * BAR; i < to * BAR; i++) {
       const r = rnd();
-      g.mel[i] = r < 0.5 ? MEL_LO + Math.floor(rnd() * (MEL_HI - MEL_LO + 1)) : r < 0.75 ? HOLD : REST;
+      g.mel[i] = i % 4 === 3 && rnd() < 0.08 ? TRIP : r < 0.5 ? MEL_LO + Math.floor(rnd() * (MEL_HI - MEL_LO + 1)) : r < 0.75 ? HOLD : REST;
       const s = rnd();
       g.bass[i] = s < 0.4 ? BASS_LO + Math.floor(rnd() * (BASS_HI - BASS_LO + 1)) : s < 0.7 ? HOLD : REST;
       const c = rnd();
@@ -219,6 +222,7 @@
   const sectionsOf = (g) => planFor(g).sections;
 
   // Notes with start, length and pitch; holds after a rest count as rest.
+  // Lengths are in steps (a triplet beat's TRIP step takes no time; see posOf).
   function parse(track) {
     const len = track.length, notes = [], norm = new Int8Array(len);
     let cur = null;
@@ -226,6 +230,7 @@
       const v = track[i];
       if (v >= 0) { cur = { s: i, len: 1, p: v }; notes.push(cur); norm[i] = v; }
       else if (v === HOLD && cur) { cur.len++; norm[i] = HOLD; }
+      else if (v === TRIP && (i & 3) === 3) { if (cur) cur.len++; norm[i] = TRIP; }
       else { cur = null; norm[i] = REST; }
     }
     return { notes, norm };
@@ -273,12 +278,16 @@
       const map = new Map();
       for (const [k, p] of pa.top) map.set(k, (map.get(k) || 0) + (1 - m) * p);
       for (const [k, p] of pb.top) map.set(k, (map.get(k) || 0) + m * p);
-      const step = probMix(pa.step, pb.step);
+      const pad = (st) => Array.from({ length: Math.max(pa.step.length, pb.step.length) }, (_, i) => (i < st.length ? st[i] : 0.005));
+      const step = probMix(pad(pa.step), pad(pb.step));
       return { map, l1: step.map(Math.log), l0: step.map((p) => Math.log(1 - p)) };
     };
     const num = (k) => (1 - m) * A[k] + m * B[k];
     const base = {};
     if (A.base && B.base) for (const k in A.base) base[k] = (1 - m) * A.base[k] + m * B.base[k];
+    // Lower bounds (see baseline.mjs): a component may not be more predictable than this.
+    const lo = {};
+    for (const k of new Set([...Object.keys(A.lo || {}), ...Object.keys(B.lo || {})])) lo[k] = (1 - m) * ((A.lo || {})[k] || 0) + m * ((B.lo || {})[k] || 0);
     return {
       chordT: logMix(A.chordT, B.chordT), degree: logMix(A.degree, B.degree),
       ivUni: logMix(A.ivUni, B.ivUni), ivBi: logMix(A.ivBi, B.ivBi), ivUniP: probMix(A.ivUni, B.ivUni),
@@ -286,13 +295,13 @@
       bassRel: logMix(A.bassRel, B.bassRel), bassIvUni: logMix(A.bassIvUni, B.bassIvUni), bassIvBi: logMix(A.bassIvBi, B.bassIvBi),
       melPat: pat(A.melPat, B.melPat), bassPat: pat(A.bassPat, B.bassPat),
       notesPerBar: num('notesPerBar'), melCenter: num('melCenter'), melSpan: num('melSpan'), bassCenter: num('bassCenter'),
-      sim02: num('sim02'), sim13: num('sim13'), base, hr: logMix(A.hr, B.hr),
+      sim02: num('sim02'), sim13: num('sim13'), base, lo, hr: logMix(A.hr, B.hr),
     };
   }
 
   function patLogP(P, mask) {
     let bern = 0;
-    for (let i = 0; i < 16; i++) bern += (mask >> i) & 1 ? P.l1[i] : P.l0[i];
+    for (let i = 0; i < P.l1.length; i++) bern += (mask >> i) & 1 ? P.l1[i] : P.l0[i];
     return Math.log(0.85 * (P.map.get(mask) || 0) + 0.15 * Math.exp(bern));
   }
 
@@ -307,7 +316,10 @@
 
   function masksOf(norm) {
     const masks = new Int32Array(4);
-    for (let i = 0; i < STEPS; i++) if (norm[i] >= 0) masks[i >> 4] |= 1 << (i % 16);
+    for (let i = 0; i < STEPS; i++) {
+      if (norm[i] >= 0) masks[i >> 4] |= 1 << (i % 16);
+      else if (norm[i] === TRIP) masks[i >> 4] |= 1 << (16 + ((i % 16) >> 2));
+    }
     return masks;
   }
 
@@ -398,7 +410,7 @@
     const M = T.model;
     const c = components(w, M, T.key, loop);
     if (!c) { groups[1] += 10; groups[2] += 10; groups[3] += 10; return; }
-    for (const k in W) groups[GROUP_OF[k]] += W[k] * Math.max(0, c[k] - (M.base[k] || 0));
+    for (const k in W) groups[GROUP_OF[k]] += W[k] * (Math.max(0, c[k] - (M.base[k] || 0)) + Math.max(0, (M.lo[k] || 0) - c[k]));
     groups[2] += 1.0 * c.emptyBars;
     groups[4] += 0.7 * (c.bassEmpty || 0);
     // Leaps wider than an octave are rare in real melodies (the interval
@@ -667,8 +679,22 @@
 
   // Mutations only touch bars from `from` on; earlier bars are frozen (and
   // can still be copied from).
-  function mutateTrack(track, rnd, lo, hi, from) {
+  function mutateTrack(track, rnd, lo, hi, from, trip) {
     const r = rnd(), len = track.length, start = from * BAR;
+    if (trip && r < 0.08) {
+      // Turn a beat into a triplet or back into 16ths.
+      const beat = (start >> 2) + Math.floor(rnd() * ((len - start) >> 2)), i = beat * 4;
+      if (track[i + 3] === TRIP) { track[i + 3] = HOLD; return; }
+      // Three notes moving by step, or a long-short pair (quarter-eighth).
+      let p = track[i] >= 0 ? track[i] : nearbyPitch(track, i, rnd, lo, hi);
+      const dir = rnd() < 0.5 ? -1 : 1, pair = rnd() < 0.3;
+      track[i] = p;
+      if (pair) track[i + 1] = HOLD;
+      else { p = clamp(p + dir * (1 + Math.floor(rnd() * 2)), lo, hi); track[i + 1] = p; }
+      track[i + 2] = clamp(p + dir * (1 + Math.floor(rnd() * 2)), lo, hi);
+      track[i + 3] = TRIP;
+      return;
+    }
     if (r < 0.5) {
       const ons = [];
       for (let i = start; i < len; i++) if (track[i] >= 0) ons.push(i);
@@ -676,6 +702,7 @@
     }
     if (r < 0.85) {
       const i = start + Math.floor(rnd() * (len - start)), t = rnd();
+      if (track[i] === TRIP && t < 0.7) return; // keep the triplet; toggled above
       track[i] = t < 0.4 ? nearbyPitch(track, i, rnd, lo, hi) : t < 0.7 ? HOLD : REST;
       return;
     }
@@ -725,14 +752,46 @@
     for (let s = slot; s < slot + n; s++) { g.roots[s] = root; g.quals[s] = q; }
   }
 
-  function mutate(g, rnd, cdf, from) {
+  // Melody rhythms real music in the genre uses (the learned bar patterns),
+  // as a cumulative distribution.
+  function rhythmCdf(T) {
+    if (!T.model) return null;
+    const keys = [...T.model.melPat.map.keys()], cdf = new Float64Array(keys.length);
+    let acc = 0;
+    keys.forEach((k, i) => { acc += T.model.melPat.map.get(k); cdf[i] = acc; });
+    for (let i = 0; i < keys.length; i++) cdf[i] /= acc;
+    return { keys, cdf };
+  }
+  // Give a bar a rhythm drawn from the genre's patterns. Its pitches stay in
+  // order; extra notes step on from the last one.
+  function proposeRhythm(g, rnd, R, from) {
+    const u = rnd();
+    let j = 0;
+    while (j < R.cdf.length - 1 && R.cdf[j] < u) j++;
+    const mask = R.keys[j], nb = barsOf(g), bar = from + Math.floor(rnd() * (nb - from)), i0 = bar * BAR;
+    const pitches = [];
+    for (let i = i0; i < i0 + BAR; i++) if (g.mel[i] >= 0) pitches.push(g.mel[i]);
+    let p = pitches.length ? pitches[0] : nearbyPitch(g.mel, i0, rnd, MEL_LO, MEL_HI), n = 0;
+    const dir = rnd() < 0.5 ? -1 : 1;
+    for (let k = 0; k < BAR; k++) {
+      const beatTrip = mask & (1 << (16 + (k >> 2)));
+      if (beatTrip && (k & 3) === 3) { g.mel[i0 + k] = TRIP; continue; }
+      if (mask & (1 << k)) {
+        p = n < pitches.length ? pitches[n] : clamp(p + dir * (1 + Math.floor(rnd() * 2)), MEL_LO, MEL_HI);
+        g.mel[i0 + k] = p; n++;
+      } else g.mel[i0 + k] = k === 0 || rnd() < 0.15 ? REST : HOLD;
+    }
+  }
+
+  function mutate(g, rnd, cdf, from, rhythms) {
     const k = 1 + (rnd() < 0.5 ? 1 : 0) + (rnd() < 0.25 ? 1 : 0), slots = g.roots.length;
     for (let j = 0; j < k; j++) {
       const m = rnd();
+      if (rhythms && m < 0.05) { proposeRhythm(g, rnd, rhythms, from); continue; }
       if (m < 0.07) { transposeSegment(g, rnd, from); continue; }
       if (m < 0.15) { proposeChord(g, rnd, cdf, from); continue; }
       const r = rnd();
-      if (r < 0.36) mutateTrack(g.mel, rnd, MEL_LO, MEL_HI, from);
+      if (r < 0.36) mutateTrack(g.mel, rnd, MEL_LO, MEL_HI, from, true);
       else if (r < 0.54) mutateTrack(g.bass, rnd, BASS_LO, BASS_HI, from);
       else if (r < 0.68) mutateTrack(g.ctr, rnd, CTR_LO, CTR_HI, from);
       else {
@@ -769,6 +828,7 @@
       opts = opts || {};
       this.target = target;
       this.cdf = chordCdf(target);
+      this.rhythms = rhythmCdf(target);
       this.seed = seed >>> 0;
       this.rnd = mulberry32(this.seed);
       this.size = opts.size || 200;
@@ -795,6 +855,7 @@
     setTarget(target) {
       this.target = target;
       this.cdf = chordCdf(target);
+      this.rhythms = rhythmCdf(target);
       this.rescore();
     }
     // Scramble a share of the current best song, independently for every
@@ -819,7 +880,7 @@
       const next = this.pop.slice(0, 6);
       while (next.length < this.size) {
         const child = this.rnd() < 0.5 ? crossover(this.tournament(), this.tournament(), this.rnd, this.from) : clone(this.tournament());
-        mutate(child, this.rnd, this.cdf, this.from);
+        mutate(child, this.rnd, this.cdf, this.from, this.rhythms);
         next.push(this.score(child));
       }
       next.sort((x, y) => x.loss - y.loss);
@@ -845,8 +906,15 @@
     return new Evolver(T, seed, { size: 60, evaluate: evaluateNext, from: 4, seeds });
   }
 
+  // Where step i of a track falls, in 16ths: in a triplet beat the first
+  // three steps are a third of a beat apart and the fourth takes no time.
+  function posOf(track, i) {
+    const b = i >> 2;
+    return (b << 2) + 3 < track.length && track[(b << 2) + 3] === TRIP ? b * 4 + (i & 3) * 4 / 3 : i;
+  }
+
   const NOTE_NAMES = ['C', 'D♭', 'D', 'E♭', 'E', 'F', 'G♭', 'G', 'A♭', 'A', 'B♭', 'B'];
   function chordName(root, q, key) { return NOTE_NAMES[(root + key) % 12] + QUALITIES[q].name; }
 
-  root.MusicLab = { STEPS, BAR, SLOTS, SLOT, REST, HOLD, PLANS, QUALITIES, GENRES, GROUPS, NOTE_NAMES, makeTarget, evaluate, evaluateNext, parse, song, sectionsOf, windowOf, Evolver, composeNext, chordName, mulberry32, loadModels, components, mixModel };
+  root.MusicLab = { STEPS, BAR, SLOTS, SLOT, REST, HOLD, TRIP, posOf, PLANS, QUALITIES, GENRES, GROUPS, NOTE_NAMES, makeTarget, evaluate, evaluateNext, parse, song, sectionsOf, windowOf, Evolver, composeNext, chordName, mulberry32, loadModels, components, mixModel };
 })(typeof self !== 'undefined' ? self : globalThis);

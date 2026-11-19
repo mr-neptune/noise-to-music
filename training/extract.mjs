@@ -18,6 +18,10 @@ export const QUALITIES = [
 const MAJOR = [6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88];
 const MINOR = [6.33, 2.68, 3.52, 5.38, 2.6, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17];
 const TOL = +(process.env.TOL || 0.07), MIN_OK = +(process.env.MIN_OK || 0.75);
+// ALIGN=1 finds the bar line in scores with a pickup; TRIPLETS=1 marks the
+// melody's triplet beats (written scores only: in performances and swung
+// jazz, late offbeats look like triplets).
+const ALIGN = !!process.env.ALIGN, TRIPLETS = !!process.env.TRIPLETS;
 const GRID = [[0, 0], [0.25, 1], [1 / 3, 1], [0.5, 2], [2 / 3, 2], [0.75, 3], [1, 4]];
 const LEAD_FAMILIES = new Set(['reed', 'brass', 'pipe', 'synth lead', 'strings']);
 
@@ -57,25 +61,67 @@ function floorline(notes) {
   return out;
 }
 
+// Meters the engine can hold: two or four beats to the bar, where a beat is a
+// quarter (4/4, 2/2, 2/4, 4/2) or, in compound meters (6/8, 12/8, 6/4), a
+// dotted note whose three parts become a triplet beat.
+function beatTicksOf([num, den], ppq) {
+  const unit = (ppq * 4) / den;
+  if (num % 3 === 0 && (num / 3 === 2 || num / 3 === 4) && den >= 4) return { beat: unit * 3, perBar: num / 3 };
+  const q = den === 2 ? { beat: ppq, perBar: num * 2 } : den === 4 ? { beat: ppq, perBar: num } : null;
+  return q && [2, 4, 8].includes(q.perBar) ? q : null;
+}
+
 function analyze(buf) {
   const midi = new Midi(buf);
-  const sigs = midi.header.timeSignatures;
-  if (sigs.some((t) => !((t.timeSignature[0] === 4 && t.timeSignature[1] === 4) || (t.timeSignature[0] === 2 && t.timeSignature[1] === 2)))) return { skip: 'meter' };
-  const ppq = midi.header.ppq, step = ppq / 4;
+  const ppq = midi.header.ppq;
+  const sigs = midi.header.timeSignatures.length ? midi.header.timeSignatures : [{ ticks: 0, timeSignature: [4, 4] }];
+  // Tick -> beat position, across meter changes.
+  const segs = [];
+  let beatAcc = 0;
+  for (let i = 0; i < sigs.length; i++) {
+    const m = beatTicksOf(sigs[i].timeSignature, ppq);
+    if (!m) return { skip: 'meter' };
+    if (segs.length) { const p = segs[segs.length - 1]; beatAcc = p.b0 + (sigs[i].ticks - p.t0) / p.beat; }
+    segs.push({ t0: sigs[i].ticks, b0: beatAcc, beat: m.beat });
+  }
+  if (segs[0].t0 > 0) segs[0].t0 = 0;
+  const beatAt = (ticks) => {
+    let s = segs[0];
+    for (const x of segs) if (x.t0 <= ticks) s = x;
+    return s.b0 + (ticks - s.t0) / s.beat;
+  };
   const tracks = midi.tracks.filter((t) => !t.instrument.percussion && t.channel !== 9 && t.notes.length >= 16);
   if (!tracks.length) return { skip: 'empty' };
 
+  // Scores may open with a pickup. Shift so the beats that carry the most
+  // (long notes, low notes) fall on the bar line and the middle of the bar.
+  let shift = 0;
+  if (ALIGN) {
+    const w = new Float64Array(4);
+    for (const t of tracks) for (const n of t.notes) {
+      const b = beatAt(n.ticks), f = b - Math.round(b);
+      if (Math.abs(f) > 0.02) continue;
+      w[((Math.round(b) % 4) + 4) % 4] += (beatAt(n.ticks + n.durationTicks) - b) * (n.midi < 55 ? 2 : 1);
+    }
+    let best = -1;
+    for (let o = 0; o < 4; o++) { const sc = w[o] + 0.5 * w[(o + 2) % 4]; if (sc > best) { best = sc; shift = (4 - o) % 4; } }
+  }
+
   // Snap onsets to 16ths, treating swung/triplet offbeats as the matching
-  // 16th step (2/3 of a beat -> the "and", 1/3 -> the "e").
+  // 16th step (2/3 of a beat -> the "and", 1/3 -> the "e"). `kind` remembers
+  // whether an offbeat was a triplet (1) or a 16th (2) position.
   let ok = 0, total = 0;
-  const snap = (ticks) => {
-    const b = ticks / ppq, beat = Math.floor(b), f = b - beat;
-    let best = 0, err = 9;
-    for (const [pos, st] of GRID) { const e = Math.abs(f - pos); if (e < err) { err = e; best = st; } }
+  const snap = (b) => {
+    const beat = Math.floor(b), f = b - beat;
+    let best = 0, err = 9, pos = 0;
+    for (const [p, st] of GRID) { const e = Math.abs(f - p); if (e < err) { err = e; best = st; pos = p; } }
     total++; if (err <= TOL) ok++;
-    return beat * 4 + best;
+    return { s: beat * 4 + best, kind: err > 0.05 ? 0 : pos === 1 / 3 || pos === 2 / 3 ? 1 : pos === 0.25 || pos === 0.75 ? 2 : 0 };
   };
-  const quant = (t) => t.notes.map((n) => ({ s: snap(n.ticks), len: Math.max(1, Math.min(32, Math.round(n.durationTicks / step))), p: n.midi }));
+  const quant = (t) => t.notes.map((n) => {
+    const b = beatAt(n.ticks) + shift, { s, kind } = snap(b);
+    return { s, kind, len: Math.max(1, Math.min(32, Math.round((beatAt(n.ticks + n.durationTicks) + shift - b) * 4))), p: n.midi };
+  });
   for (const t of tracks) quant(t);
   if (ok / total < MIN_OK) return { skip: "unquantized" };
   const info = tracks.map((t) => {
@@ -164,9 +210,17 @@ function analyze(buf) {
     if (k + 1 < slots) chords[k + 1] = split ? [b.r, b.q] : [bar.r, bar.q];
   }
   const key = estimateKey(keyHist);
-  const tempo = midi.header.tempos.length ? midi.header.tempos[0].bpm : 120;
+  const qpm = midi.header.tempos.length ? midi.header.tempos[0].bpm : 120;
+  const tempo = (qpm * ppq) / segs[0].beat;
+  // Beats where the melody plays triplets and no 16th offbeats.
+  let tri;
+  if (TRIPLETS) {
+    const kinds = new Map();
+    for (const n of best.notes) { const b = n.s >> 2, k = kinds.get(b) || 0; kinds.set(b, k | (n.kind === 1 ? 1 : n.kind === 2 ? 2 : 0)); }
+    tri = [...kinds].filter(([, k]) => k === 1).map(([b]) => b).sort((a, b) => a - b);
+  }
   const pack = (ns) => ns.map((n) => [n.s, n.len, n.p]);
-  return { tempo: Math.round(tempo), tonic: key.tonic, minor: key.minor, end, mel: pack(mel), bass: bass ? pack(bass) : null, chords };
+  return { tempo: Math.round(tempo), tonic: key.tonic, minor: key.minor, end, mel: pack(mel), bass: bass ? pack(bass) : null, chords, ...(tri ? { tri } : {}) };
 }
 
 const lines = fs.readFileSync(listPath, 'utf8').trim().split('\n');

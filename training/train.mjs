@@ -12,19 +12,44 @@ const NAMES = ['', 'm', '5', '7', 'maj7', 'm7', '9', 'm9', 'maj9', 'dim', 'sus4'
 const strength = (s) => { const k = s % 16; return k === 0 || k === 8 ? 0 : k === 4 || k === 12 ? 1 : k % 2 === 0 ? 2 : 3; };
 const ivIndex = (d) => Math.max(-12, Math.min(12, d)) + 12;
 
-// genre -> { sources, minor (mode used for the degree table), filter }
+// Passing tones in busy scores read as added-note chords (Cmaj9, C5). For
+// classical, fold those into the chords common-practice harmony uses:
+// 5, maj7, maj9 -> major; 9 -> 7; m9 -> m7.
+const COMMON_PRACTICE = { 2: 0, 4: 0, 6: 3, 7: 5, 8: 0 };
+// genre -> { sources, minor (mode used for the degree table), filter,
+//            weight (per-file weights), qualities (chord quality folding) }
 const GENRES = {
-  classical: { sources: ['classical'], minor: false },
+  // Scores from the Mutopia Project (public domain or CC BY), weighted so no
+  // composer outweighs the rest and Chopin counts triple.
+  classical: { sources: ['mutopia'], minor: false, weight: composerWeights, qualities: COMMON_PRACTICE },
   jazz: { sources: ['jazz', 'wjazz'], minor: false },
   lofi: { sources: ['jazz', 'rnb'], minor: false, filter: (d) => d.tempo < 95 },
   rock: { sources: ['rock'], minor: true },
   funk: { sources: ['funk'], minor: true },
 };
 
+// Composer from a Mutopia path (".../ftp__ChopinFF__O28__...mid").
+const composerOf = (d) => (d.path.split('/').pop().split('__')[1] || '?');
+function composerWeights(docs) {
+  const bars = {};
+  for (const d of docs) bars[composerOf(d)] = (bars[composerOf(d)] || 0) + d.end / 16;
+  const CAP = 5000, BOOST = { ChopinFF: 3 };
+  return (d) => { const c = composerOf(d); return Math.min(1, CAP / bars[c]) * (BOOST[c] || 1); };
+}
+// A bar's melody rhythm: x = onset, . = none; a beat in [..] is a triplet.
+function showPat(mk) {
+  let out = '';
+  for (let b = 0; b < 4; b++) {
+    const t = mk & (1 << (16 + b)), cells = [0, 1, 2, 3].slice(0, t ? 3 : 4).map((k) => (mk & (1 << (b * 4 + k)) ? 'x' : '.')).join('');
+    out += t ? `[${cells}]` : cells;
+  }
+  return out;
+}
+
 function newStats() {
   return {
     files: 0, bars: 0, tempos: [],
-    melPat: new Map(), melStep: new Float64Array(16), melBars: 0, melNotesPerBar: [],
+    melPat: new Map(), melStep: new Float64Array(20), tri: 0, beats: 0, melBars: 0, melNotesPerBar: [],
     fill: new Float64Array(3),
     ivUni: new Float64Array(25), ivBi: new Float64Array(25 * 25),
     melRel: new Float64Array(4 * 4 * 12),
@@ -45,29 +70,32 @@ function grid(notes, end) {
   return g;
 }
 
-function addFile(st, d, genre) {
+function addFile(st, d, genre, w = 1) {
   st.files++;
   st.tempos.push(d.tempo);
   const end = d.end, nBars = Math.floor(end / 16);
   st.bars += nBars;
+  // Melody beats played as triplets: bits 16-19 of the bar's pattern.
+  const tri = new Set(d.tri || []);
   const mel = d.mel, bass = d.bass, chords = d.chords;
   const chordAt = (s) => chords[s >> 3];
 
   // Rhythm patterns over the active span of each line.
-  const patterns = (notes, map, step, key) => {
+  const patterns = (notes, map, step, key, withTri) => {
     if (!notes || notes.length < 4) return;
     const first = Math.floor(notes[0][0] / 16), last = Math.floor(notes[notes.length - 1][0] / 16);
     const masks = new Int32Array(nBars);
     for (const [s] of notes) { const b = s >> 4; if (b < nBars) masks[b] |= 1 << (s % 16); }
+    if (withTri) for (const t of tri) { const b = t >> 2; if (b < nBars) { masks[b] &= ~(1 << ((t % 4) * 4 + 3)); masks[b] |= 1 << (16 + (t % 4)); } }
     for (let b = first; b <= last && b < nBars; b++) {
       if (!masks[b]) continue;
-      map.set(masks[b], (map.get(masks[b]) || 0) + 1);
-      for (let i = 0; i < 16; i++) if (masks[b] & (1 << i)) step[i]++;
-      st[key]++;
-      if (key === 'melBars') { let c = 0; for (let i = 0; i < 16; i++) if (masks[b] & (1 << i)) c++; st.melNotesPerBar.push(c); }
+      map.set(masks[b], (map.get(masks[b]) || 0) + w);
+      for (let i = 0; i < step.length; i++) if (masks[b] & (1 << i)) step[i] += w;
+      st[key] += w;
+      if (key === 'melBars') { let c = 0; for (let i = 0; i < 16; i++) if (masks[b] & (1 << i)) c++; st.melNotesPerBar.push([c, w]); for (let i = 16; i < 20; i++) if (masks[b] & (1 << i)) st.tri += w; st.beats += 4 * w; }
     }
   };
-  patterns(mel, st.melPat, st.melStep, 'melBars');
+  patterns(mel, st.melPat, st.melStep, 'melBars', true);
   patterns(bass, st.bassPat, st.bassStep, 'bassBars');
 
   // Melody intervals, fill ratio and chord-relative pitch.
@@ -77,16 +105,16 @@ function addFile(st, d, genre) {
     const next = mel[i + 1];
     if (next) {
       const gap = next[0] - s;
-      st.fill[len / Math.min(gap, 16) <= 0.5 ? 0 : len / Math.min(gap, 16) < 0.95 ? 1 : 2]++;
+      st.fill[len / Math.min(gap, 16) <= 0.5 ? 0 : len / Math.min(gap, 16) < 0.95 ? 1 : 2] += w;
       if (gap <= 16) {
         const iv = ivIndex(next[2] - p);
-        st.ivUni[iv]++;
-        if (prevIv >= 0) st.ivBi[prevIv * 25 + iv]++;
+        st.ivUni[iv] += w;
+        if (prevIv >= 0) st.ivBi[prevIv * 25 + iv] += w;
         prevIv = iv;
       } else prevIv = -1;
     }
     const c = chordAt(s);
-    if (c) st.melRel[(strength(s) * 4 + QCLASS[c[1]]) * 12 + (((p - c[0]) % 12) + 12) % 12]++;
+    if (c) st.melRel[(strength(s) * 4 + QCLASS[c[1]]) * 12 + (((p - c[0]) % 12) + 12) % 12] += w;
   }
 
   // Chord transitions per half bar, conditioned on previous quality and on
@@ -96,7 +124,7 @@ function addFile(st, d, genre) {
     if (!a || !b) continue;
     const parity = (k + 1) % 2;
     const out = a[0] === b[0] && a[1] === b[1] ? 0 : 1 + (((b[0] - a[0]) % 12 + 12) % 12) * NQ + b[1];
-    st.chordT[(parity * NQ + a[1]) * (1 + 12 * NQ) + out]++;
+    st.chordT[(parity * NQ + a[1]) * (1 + 12 * NQ) + out] += w;
   }
   // Harmonic rhythm: chord changes inside each aligned 4-bar window.
   for (let w = 0; w + 8 <= chords.length; w += 8) {
@@ -104,10 +132,10 @@ function addFile(st, d, genre) {
     if (win.some((c) => !c)) continue;
     let ch = 0;
     for (let k = 1; k < 8; k++) if (win[k][0] !== win[k - 1][0] || win[k][1] !== win[k - 1][1]) ch++;
-    st.hr[ch]++;
+    st.hr[ch] += w;
   }
   if (d.minor === GENRES[genre].minor) {
-    for (const c of chords) if (c) st.degree[(((c[0] - d.tonic) % 12 + 12) % 12) * NQ + c[1]]++;
+    for (const c of chords) if (c) st.degree[(((c[0] - d.tonic) % 12 + 12) % 12) * NQ + c[1]] += w;
   }
 
   if (bass && bass.length >= 4) {
@@ -115,16 +143,16 @@ function addFile(st, d, genre) {
     for (let i = 0; i < bass.length; i++) {
       const [s, , p] = bass[i];
       const c = chordAt(s);
-      if (c) st.bassRel[strength(s) * 12 + (((p - c[0]) % 12) + 12) % 12]++;
+      if (c) st.bassRel[strength(s) * 12 + (((p - c[0]) % 12) + 12) % 12] += w;
       const next = bass[i + 1];
       if (next && next[0] - s <= 16) {
         const iv = ivIndex(next[2] - p);
-        st.bassIvUni[iv]++;
-        if (prev >= 0) st.bassIvBi[prev * 25 + iv]++;
+        st.bassIvUni[iv] += w;
+        if (prev >= 0) st.bassIvBi[prev * 25 + iv] += w;
         prev = iv;
       } else prev = -1;
     }
-    st.bassMean.push(bass.reduce((a, n) => a + n[2], 0) / bass.length);
+    st.bassMean.push([bass.reduce((a, n) => a + n[2], 0) / bass.length, w]);
   }
 
   // Register and phrase structure over aligned 4-bar windows.
@@ -132,14 +160,14 @@ function addFile(st, d, genre) {
   for (let w = 0; w + 4 <= nBars; w += 4) {
     const ps = mel.filter((n) => n[0] >= w * 16 && n[0] < w * 16 + 64).map((n) => n[2]);
     if (ps.length < 6) continue;
-    st.melMean.push(ps.reduce((a, b) => a + b) / ps.length);
-    st.melSpan.push(Math.max(...ps) - Math.min(...ps));
+    st.melMean.push([ps.reduce((a, b) => a + b) / ps.length, w]);
+    st.melSpan.push([Math.max(...ps) - Math.min(...ps), w]);
     const sim = (a, b) => { let same = 0; for (let i = 0; i < 16; i++) if (g[(w + a) * 16 + i] === g[(w + b) * 16 + i]) same++; return same / 16; };
-    st.sim02.push(sim(0, 2)); st.sim13.push(sim(1, 3));
+    st.sim02.push([sim(0, 2), w]); st.sim13.push([sim(1, 3), w]);
   }
 }
 
-const mean = (a) => a.reduce((x, y) => x + y, 0) / (a.length || 1);
+const mean = (a) => { let s = 0, n = 0; for (const [v, w] of a) { s += v * w; n += w; } return s / (n || 1); };
 const median = (a) => { const s = [...a].sort((x, y) => x - y); return s[Math.floor(s.length / 2)] || 0; };
 const round = (x, n = 4) => +x.toPrecision(n);
 
@@ -157,6 +185,7 @@ function patternModel(map, step, bars, topK) {
   const items = [...map.entries()].sort((a, b) => b[1] - a[1]).slice(0, topK);
   return {
     top: items.map(([m, c]) => [m, round(c / bars)]),
+    // step[16..19]: how often each beat is a triplet.
     step: Array.from(step, (c) => round(Math.min(0.98, Math.max(0.005, c / bars)))),
   };
 }
@@ -165,7 +194,7 @@ function finish(st) {
   return {
     files: st.files, bars: st.bars, tempo: median(st.tempos),
     melPat: patternModel(st.melPat, st.melStep, st.melBars, 400),
-    notesPerBar: round(mean(st.melNotesPerBar), 3),
+    notesPerBar: round(mean(st.melNotesPerBar), 3), triplets: round(st.tri / (st.beats || 1), 3),
     fill: normRows(st.fill, 3, 1),
     ivUni: normRows(st.ivUni, 25, 0.5), ivBi: normRows(st.ivBi, 25, 0.5),
     melRel: normRows(st.melRel, 12, 0.5),
@@ -196,8 +225,13 @@ for (const f of files) {
 const models = {}, holdout = {};
 for (const [genre, cfg] of Object.entries(GENRES)) {
   const st = newStats(), docs = [];
-  for (const src of cfg.sources) for (const d of bySource[src] || []) if (!cfg.filter || cfg.filter(d)) docs.push(d);
-  docs.forEach((d, i) => { if (i % 10 !== 0) addFile(st, d, genre); });
+  for (const src of cfg.sources) for (const d of bySource[src] || []) {
+    if (cfg.filter && !cfg.filter(d)) continue;
+    const q = cfg.qualities;
+    docs.push(q ? { ...d, chords: d.chords.map((c) => c && [c[0], c[1] in q ? q[c[1]] : c[1]]) } : d);
+  }
+  const weigh = cfg.weight ? cfg.weight(docs) : () => 1;
+  docs.forEach((d, i) => { if (i % 10 !== 0) addFile(st, d, genre, weigh(d)); });
   models[genre] = finish(st);
   holdout[genre] = docs.filter((_, i) => i % 10 === 0);
 }
@@ -207,7 +241,7 @@ const log = (...a) => console.error(...a);
 const NOTE = ['C', 'C#', 'D', 'Eb', 'E', 'F', 'F#', 'G', 'Ab', 'A', 'Bb', 'B'];
 for (const [g, m] of Object.entries(models)) {
   log('  chord changes per 4 bars:', m.hr.map((p, i) => `${i}:${(p * 100).toFixed(0)}%`).join(' '));
-  log(`\n== ${g}: ${m.files} files, ${m.bars} bars, tempo ${m.tempo}, notes/bar ${m.notesPerBar}, center ${m.melCenter}, span ${m.melSpan}, bass ${m.bassCenter}, sim02 ${m.sim02}, sim13 ${m.sim13}`);
+  log(`\n== ${g}: ${m.files} files, ${m.bars} bars, tempo ${m.tempo}, notes/bar ${m.notesPerBar}, triplet beats ${(m.triplets * 100).toFixed(1)}%, center ${m.melCenter}, span ${m.melSpan}, bass ${m.bassCenter}, sim02 ${m.sim02}, sim13 ${m.sim13}`);
   const deg = m.degree.map((p, i) => [p, NOTE[Math.floor(i / NQ)] + NAMES[i % NQ]]).sort((a, b) => b[0] - a[0]).slice(0, 10);
   log('  chords (rel. to C tonic):', deg.map(([p, n]) => `${n} ${(p * 100).toFixed(1)}%`).join(', '));
   const changes = [];
@@ -217,7 +251,7 @@ for (const [g, m] of Object.entries(models)) {
   }
   log('  bar-line moves:', changes.filter((c) => ['maj', 'm', '7', 'm7', 'maj7', '5'].includes(c[0])).map((c) => c.join(': ')).join(' | '));
   log('  intervals:', m.ivUni.map((p, i) => [p, i - 12]).sort((a, b) => b[0] - a[0]).slice(0, 8).map(([p, i]) => `${i}:${(p * 100).toFixed(0)}%`).join(' '));
-  log('  mel patterns:', m.melPat.top.slice(0, 5).map(([mk, p]) => mk.toString(2).padStart(16, '0').split('').reverse().join('').replace(/0/g, '.').replace(/1/g, 'x') + ' ' + (p * 100).toFixed(1) + '%').join('  '));
+  log('  mel patterns:', m.melPat.top.slice(0, 8).map(([mk, p]) => showPat(mk) + ' ' + (p * 100).toFixed(1) + '%').join('  '));
   log('  bass patterns:', m.bassPat.top.slice(0, 3).map(([mk, p]) => mk.toString(2).padStart(16, '0').split('').reverse().join('').replace(/0/g, '.').replace(/1/g, 'x') + ' ' + (p * 100).toFixed(1) + '%').join('  '));
 }
 
