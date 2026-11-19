@@ -50,6 +50,7 @@ h2::after{content:"";flex:1;height:1px;background:linear-gradient(90deg,var(--li
 
 .genres{display:flex;flex-wrap:wrap;gap:8px}
 .styles-label{margin-top:14px}
+[hidden]{display:none!important}
 .genre{font:600 14px var(--sans);color:var(--soft);background:rgba(255,255,255,.04);border:1px solid var(--line);border-radius:999px;padding:9px 16px;cursor:pointer;transition:background .2s,border-color .2s,color .2s}
 .genre:hover{border-color:rgba(143,211,255,.45);color:var(--ink)}
 .genre[aria-pressed="true"]{background:linear-gradient(135deg,rgba(244,166,189,.9),rgba(143,211,255,.9));color:#0b1026;border-color:transparent}
@@ -253,7 +254,7 @@ button:focus-visible,a:focus-visible,select:focus-visible,input:focus-visible{ou
       retarget();
     });
     row.appendChild(b);
-    var o = document.createElement('option'); o.value = id; o.textContent = L.GENRES[id].name; blendEl.appendChild(o);
+    var o = document.createElement('option'); o.value = id; o.textContent = (L.GENRES[id].group ? 'Classical · ' : '') + L.GENRES[id].name; blendEl.appendChild(o);
   });
   blendEl.addEventListener('change', function () { S.blend = blendEl.value === S.genre ? '' : blendEl.value; retarget(); });
   $('mix').addEventListener('input', function () { S.mix = +this.value; $('mixtext').textContent = label(); });
@@ -279,7 +280,11 @@ button:focus-visible,a:focus-visible,select:focus-visible,input:focus-visible{ou
   $('live').addEventListener('click', function () { S.live = true; dirty = true; syncControls(); });
 
   function syncControls() {
-    Array.prototype.forEach.call(genresEl.querySelectorAll('.genre'), function (b) { b.setAttribute('aria-pressed', String(b.dataset.id === S.genre)); });
+    // Classical styles are sub-styles: their row shows only under Classical,
+    // and Classical stays highlighted while one of them is picked.
+    var group = L.GENRES[S.genre].group, classical = S.genre === 'classical' || group === 'classical';
+    $('styles').hidden = $('styles-label').hidden = !classical;
+    Array.prototype.forEach.call(genresEl.querySelectorAll('.genre'), function (b) { b.setAttribute('aria-pressed', String(b.dataset.id === S.genre || b.dataset.id === group)); });
     Array.prototype.forEach.call(stylesEl.querySelectorAll('.genre'), function (b) { b.setAttribute('aria-pressed', String(b.dataset.id === S.genre)); });
     Array.prototype.forEach.call(blendEl.options, function (o) { o.disabled = o.value === S.genre; });
     blendEl.value = S.blend;
